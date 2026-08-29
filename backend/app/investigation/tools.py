@@ -29,6 +29,11 @@ class InvestigationTools:
         )
         self._commit_sha = index.snapshot.commit_sha
 
+    @property
+    def index(self) -> PythonRepositoryIndex:
+        """The immutable local index used for deterministic citation checks."""
+        return self._index
+
     def get_repository_map(self) -> RepositoryMap:
         return self._index.repository_map
 
