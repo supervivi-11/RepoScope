@@ -260,6 +260,31 @@ def test_read_code_enforces_exact_lines_paths_and_200_line_boundary(tmp_path) ->
         index.read_code("missing.py", 1, 1)
 
 
+def test_source_excerpts_and_chunks_preserve_crlf_and_cr_bytes_exactly(tmp_path) -> None:
+    """Breaks if text decoding applies universal-newline translation."""
+    index = _build(
+        tmp_path,
+        {
+            "windows.py": "value = 1\r\nnext_value = 2\r\n",
+            "legacy.txt": "alpha\rbeta\r",
+        },
+    )
+
+    assert index.read_code("windows.py", 1, 2).excerpt == (
+        "value = 1\r\nnext_value = 2\r\n"
+    )
+    assert index.read_code("legacy.txt", 1, 2).excerpt == "alpha\rbeta\r"
+    chunks = {chunk.source.location.path: chunk for chunk in index.chunks}
+    assert chunks["windows.py"].text == "value = 1\r\nnext_value = 2\r\n"
+    assert chunks["windows.py"].chunk_id == (
+        "cc3d706b9b954725fc7086738a05041debf28284383e66489abf5b682096d2ee"
+    )
+    assert chunks["legacy.txt"].text == "alpha\rbeta\r"
+    assert chunks["legacy.txt"].chunk_id == (
+        "0f381954bb8d49b4264893b04ffe08d2fb6c9309317c9ed0cd994c667417e219"
+    )
+
+
 def test_find_symbol_handles_collisions_and_references_are_conservative(tmp_path) -> None:
     """Breaks if exact lookup loses collisions or references claim dynamic certainty."""
     index = _build(
@@ -300,6 +325,58 @@ def test_find_symbol_handles_collisions_and_references_are_conservative(tmp_path
         ("broken.py", 2, "text_reference"),
     ]
     assert all(hit.certainty != "dynamic_call" for hit in references)
+
+
+def test_decorated_definition_ranges_begin_at_earliest_decorator(tmp_path) -> None:
+    """Breaks if decorated classes, functions, or async functions omit decorators."""
+    index = _build(
+        tmp_path,
+        {
+            "decorated.py": (
+                "@class_decorator\n"
+                "class Service:\n"
+                "    @method_decorator\n"
+                "    def run(self):\n"
+                "        return True\n"
+                "\n"
+                "@function_decorator\n"
+                "def helper():\n"
+                "    return 1\n"
+                "\n"
+                "@first\n"
+                "@second()\n"
+                "async def load():\n"
+                "    return 2\n"
+            )
+        },
+    )
+
+    service = index.find_symbol("Service").symbols[0]
+    method = index.find_symbol("run").symbols[0]
+    helper = index.find_symbol("helper").symbols[0]
+    load = index.find_symbol("load").symbols[0]
+    assert (service.source.location.start_line, service.source.location.end_line) == (
+        1,
+        5,
+    )
+    assert service.source.excerpt.startswith("@class_decorator\nclass Service:\n")
+    assert (method.source.location.start_line, method.source.location.end_line) == (
+        3,
+        5,
+    )
+    assert method.source.excerpt.startswith("    @method_decorator\n    def run")
+    assert (helper.source.location.start_line, helper.source.location.end_line) == (
+        7,
+        9,
+    )
+    assert helper.source.excerpt == "@function_decorator\ndef helper():\n    return 1\n"
+    assert (load.source.location.start_line, load.source.location.end_line) == (
+        11,
+        14,
+    )
+    assert load.source.excerpt == (
+        "@first\n@second()\nasync def load():\n    return 2\n"
+    )
 
 
 def test_chunks_are_bounded_exact_and_stable_on_symbol_boundaries(tmp_path) -> None:
@@ -351,3 +428,28 @@ def test_long_classes_split_at_nested_method_boundaries(tmp_path) -> None:
         for chunk in index.chunks
     ]
     assert ranges == [(1, 120), (121, 125), (126, 127)]
+
+
+def test_long_classes_split_before_nested_method_decorators(tmp_path) -> None:
+    """Breaks if decorated nested symbols split at `def` instead of decorator lines."""
+    class_prefix = "class Service:\n" + "".join(
+        f"    value_{number} = {number}\n" for number in range(1, 124)
+    )
+    index = _build(
+        tmp_path,
+        {
+            "service.py": (
+                class_prefix
+                + "    @trace\n"
+                + "    async def run(self):\n"
+                + "        return True\n"
+            )
+        },
+    )
+
+    ranges = [
+        (chunk.source.location.start_line, chunk.source.location.end_line)
+        for chunk in index.chunks
+    ]
+    assert ranges == [(1, 120), (121, 124), (125, 127)]
+    assert index.chunks[-1].text.startswith("    @trace\n    async def run")

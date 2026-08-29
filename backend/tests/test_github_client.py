@@ -159,6 +159,43 @@ async def test_recent_commits_optional_path_stays_on_allowlisted_query_boundary(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("query", "expected_q"),
+    [
+        (
+            "repo:evil/project OR is:pr",
+            'repo:openai/codex is:issue "repo:evil/project OR is:pr"',
+        ),
+        (
+            "label:security author:attacker",
+            'repo:openai/codex is:issue "label:security author:attacker"',
+        ),
+        (
+            'failure says "quoted" at \\server',
+            'repo:openai/codex is:issue "failure says \\"quoted\\" at \\\\server"',
+        ),
+    ],
+)
+async def test_related_issue_query_quotes_hostile_search_syntax_as_literal_text(
+    query: str,
+    expected_q: str,
+) -> None:
+    """Breaks if issue text can inject qualifiers outside the immutable repo scope."""
+    observed_queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/search/issues"
+        observed_queries.append(request.url.params["q"])
+        return httpx.Response(200, json={"total_count": 0, "items": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        issues = await GithubClient(http).fetch_related_issues(COORDINATES, query)
+
+    assert issues == ()
+    assert observed_queries == [expected_q]
+
+
+@pytest.mark.anyio
 async def test_client_reads_optional_token_from_settings_without_exposing_it() -> None:
     """Breaks if configured credentials are omitted from requests or revealed by settings."""
     token = "github-secret-value"

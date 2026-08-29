@@ -148,7 +148,10 @@ class GithubClient:
         payload = await self._request_json(
             f"{_API_ORIGIN}/search/issues",
             params={
-                "q": f"repo:{coordinates.owner}/{coordinates.repository} is:issue {query}",
+                "q": (
+                    f"repo:{coordinates.owner}/{coordinates.repository} is:issue "
+                    f"{_quote_search_literal(query)}"
+                ),
                 "per_page": str(limit),
             },
         )
@@ -345,3 +348,8 @@ class GithubClient:
             html_url=html_url,
             committed_at=timestamp,
         )
+
+
+def _quote_search_literal(query: str) -> str:
+    escaped = query.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'

@@ -115,7 +115,7 @@ class _SymbolVisitor(ast.NodeVisitor):
                 source=_excerpt(
                     self._path,
                     self._lines,
-                    node.lineno,
+                    _definition_start_line(node),
                     node.end_lineno or node.lineno,
                     self._commit_sha,
                 ),
@@ -427,7 +427,7 @@ def _read_snapshot(snapshot: RepositorySnapshot) -> tuple[_IndexedFile, ...]:
                 relative = resolved.relative_to(root).as_posix()
                 if resolved.suffix.casefold() not in _RETAINED_EXTENSIONS:
                     continue
-                text = resolved.read_text(encoding="utf-8")
+                text = resolved.read_bytes().decode("utf-8")
                 lines = tuple(text.splitlines(keepends=True)) or ("",)
                 indexed.append(
                     _IndexedFile(
@@ -559,7 +559,7 @@ def _build_chunks(
         boundaries = {1, len(item.lines) + 1}
         if item.tree is not None:
             boundaries.update(
-                node.lineno
+                _definition_start_line(node)
                 for node in ast.walk(item.tree)
                 if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
             )
@@ -625,6 +625,14 @@ def _validate_symbol_query(symbol: str) -> str:
     if not isinstance(symbol, str) or not symbol or symbol != symbol.strip():
         raise InvalidQueryError("Symbol query must not be empty.")
     return symbol
+
+
+def _definition_start_line(
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+) -> int:
+    return min(
+        (node.lineno, *(decorator.lineno for decorator in node.decorator_list))
+    )
 
 
 def _attribute_name(node: ast.Attribute) -> str:
