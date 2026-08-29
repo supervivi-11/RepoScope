@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import os
 import re
+import tokenize
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -55,6 +57,7 @@ class _IndexedFile:
     path: str
     lines: tuple[str, ...]
     tree: ast.Module | None
+    decorator_tokens: tuple[tuple[int, int], ...] = ()
 
     @property
     def text(self) -> str:
@@ -69,11 +72,13 @@ class _SymbolVisitor(ast.NodeVisitor):
         path: str,
         lines: tuple[str, ...],
         commit_sha: str,
+        decorator_tokens: tuple[tuple[int, int], ...],
     ) -> None:
         self._module = module
         self._path = path
         self._lines = lines
         self._commit_sha = commit_sha
+        self._decorator_tokens = decorator_tokens
         self._scope: list[tuple[str, str]] = []
         self.symbols: list[SymbolRecord] = []
 
@@ -115,7 +120,7 @@ class _SymbolVisitor(ast.NodeVisitor):
                 source=_excerpt(
                     self._path,
                     self._lines,
-                    _definition_start_line(node),
+                    _definition_start_line(node, self._decorator_tokens),
                     node.end_lineno or node.lineno,
                     self._commit_sha,
                 ),
@@ -164,7 +169,12 @@ class PythonRepositoryIndex:
                 parse_errors.append(item.path)
                 parsed_files.append(item)
                 continue
-            parsed = _IndexedFile(path=item.path, lines=item.lines, tree=tree)
+            parsed = _IndexedFile(
+                path=item.path,
+                lines=item.lines,
+                tree=tree,
+                decorator_tokens=_decorator_at_tokens(item.text),
+            )
             parsed_files.append(parsed)
             end_line = max(1, len(item.lines))
             symbols.append(
@@ -180,6 +190,7 @@ class PythonRepositoryIndex:
                 path=item.path,
                 lines=item.lines,
                 commit_sha=snapshot.commit_sha,
+                decorator_tokens=parsed.decorator_tokens,
             )
             visitor.visit(tree)
             symbols.extend(visitor.symbols)
@@ -559,7 +570,7 @@ def _build_chunks(
         boundaries = {1, len(item.lines) + 1}
         if item.tree is not None:
             boundaries.update(
-                _definition_start_line(node)
+                _definition_start_line(node, item.decorator_tokens)
                 for node in ast.walk(item.tree)
                 if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
             )
@@ -629,10 +640,46 @@ def _validate_symbol_query(symbol: str) -> str:
 
 def _definition_start_line(
     node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+    decorator_tokens: tuple[tuple[int, int], ...],
 ) -> int:
-    return min(
-        (node.lineno, *(decorator.lineno for decorator in node.decorator_list))
+    decorator_count = len(node.decorator_list)
+    if decorator_count == 0:
+        return node.lineno
+    candidates = tuple(
+        line
+        for line, column in decorator_tokens
+        if column == node.col_offset and line < node.lineno
     )
+    if len(candidates) < decorator_count:
+        raise UnsafeSnapshotError("Decorated definition tokens are inconsistent.")
+    return candidates[-decorator_count]
+
+
+def _decorator_at_tokens(text: str) -> tuple[tuple[int, int], ...]:
+    markers: list[tuple[int, int]] = []
+    logical_line_has_code = False
+    ignored = {
+        tokenize.COMMENT,
+        tokenize.DEDENT,
+        tokenize.ENDMARKER,
+        tokenize.INDENT,
+        tokenize.NL,
+    }
+    token_source = io.StringIO(text, newline=None)
+    for token in tokenize.generate_tokens(token_source.readline):
+        if token.type == tokenize.NEWLINE:
+            logical_line_has_code = False
+            continue
+        if token.type in ignored:
+            continue
+        if (
+            not logical_line_has_code
+            and token.type == tokenize.OP
+            and token.string == "@"
+        ):
+            markers.append(token.start)
+        logical_line_has_code = True
+    return tuple(markers)
 
 
 def _attribute_name(node: ast.Attribute) -> str:

@@ -453,3 +453,75 @@ def test_long_classes_split_before_nested_method_decorators(tmp_path) -> None:
     ]
     assert ranges == [(1, 120), (121, 124), (125, 127)]
     assert index.chunks[-1].text.startswith("    @trace\n    async def run")
+
+
+def test_multiline_parenthesized_decorators_start_at_physical_at_token(tmp_path) -> None:
+    """Breaks if AST expression lines replace the actual decorator-token start."""
+    class_prefix = "class Service:\n" + "".join(
+        f"    value_{number} = {number}\n" for number in range(1, 124)
+    )
+    decorated_method = (
+        "    @(\n"
+        "        trace\n"
+        "    )\n"
+        "    @(\n"
+        "        audit\n"
+        "    )\n"
+        "    async def run(self):\n"
+        "        return True\n"
+    )
+    index = _build(
+        tmp_path,
+        {"service.py": class_prefix + decorated_method},
+    )
+
+    run = index.find_symbol("run").symbols[0]
+    assert (run.source.location.start_line, run.source.location.end_line) == (
+        125,
+        132,
+    )
+    assert run.source.excerpt == decorated_method
+    ranges = [
+        (chunk.source.location.start_line, chunk.source.location.end_line)
+        for chunk in index.chunks
+    ]
+    assert ranges == [(1, 120), (121, 124), (125, 132)]
+    assert index.chunks[-1].text == decorated_method
+
+
+def test_decorator_token_scan_ignores_aligned_matrix_operator(tmp_path) -> None:
+    """Breaks if an `@` inside a decorator expression replaces its marker token."""
+    source = (
+        "@(\n"
+        "left\n"
+        "@ right\n"
+        ")\n"
+        "async def run():\n"
+        "    return True\n"
+    )
+    index = _build(tmp_path, {"decorated.py": source})
+
+    run = index.find_symbol("run").symbols[0]
+    assert (run.source.location.start_line, run.source.location.end_line) == (1, 6)
+    assert run.source.excerpt == source
+    assert index.chunks[0].text == source
+
+
+def test_parenthesized_decorator_tokens_keep_physical_rows_in_cr_source(tmp_path) -> None:
+    """Breaks if token rows collapse while exact standalone-CR text is retained."""
+    source = (
+        "@(\r"
+        "trace\r"
+        ")\r"
+        "@(\r"
+        "audit\r"
+        ")\r"
+        "async def run():\r"
+        "    return True\r"
+    )
+    index = _build(tmp_path, {"decorated.py": source})
+
+    run = index.find_symbol("run").symbols[0]
+    assert (run.source.location.start_line, run.source.location.end_line) == (1, 8)
+    assert run.source.excerpt == source
+    assert index.chunks[0].text == source
