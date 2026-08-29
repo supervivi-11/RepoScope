@@ -121,13 +121,17 @@ class GithubClient:
         coordinates: RepositoryCoordinates,
         *,
         sha: str,
+        path: str | None = None,
         limit: int = 10,
     ) -> tuple[CommitMetadata, ...]:
         if not _SHA_PATTERN.fullmatch(sha):
             raise MalformedGithubResponseError()
+        params = {"sha": sha.lower(), "per_page": str(limit)}
+        if path is not None:
+            params["path"] = path
         payload = await self._request_json(
             f"{_API_ORIGIN}/repos/{coordinates.owner}/{coordinates.repository}/commits",
-            params={"sha": sha.lower(), "per_page": str(limit)},
+            params=params,
             expect_mapping=False,
         )
         if not isinstance(payload, list):

@@ -139,6 +139,26 @@ async def test_recent_commits_query_is_anchored_to_resolved_sha() -> None:
 
 
 @pytest.mark.anyio
+async def test_recent_commits_optional_path_stays_on_allowlisted_query_boundary() -> None:
+    """Breaks if a tool path becomes a URL or is omitted from the read-only GitHub query."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/openai/codex/commits"
+        assert dict(request.url.params) == {
+            "sha": SHA,
+            "per_page": "10",
+            "path": "src/parser.py",
+        }
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        commits = await GithubClient(http).fetch_recent_commits(
+            COORDINATES, sha=SHA, path="src/parser.py"
+        )
+
+    assert commits == ()
+
+
+@pytest.mark.anyio
 async def test_client_reads_optional_token_from_settings_without_exposing_it() -> None:
     """Breaks if configured credentials are omitted from requests or revealed by settings."""
     token = "github-secret-value"
