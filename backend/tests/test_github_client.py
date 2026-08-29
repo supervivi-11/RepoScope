@@ -5,6 +5,7 @@ import pytest
 
 from app.config import Settings
 from app.ingestion import (
+    ArchiveDownloadLimitError,
     GithubClient,
     GithubRateLimitError,
     GithubTimeoutError,
@@ -17,6 +18,20 @@ from app.ingestion import (
 
 COORDINATES = RepositoryCoordinates(owner="openai", repository="codex")
 SHA = "a" * 40
+
+
+class _CountingAsyncStream(httpx.AsyncByteStream):
+    def __init__(self, chunk_sizes: list[int]) -> None:
+        self.chunk_sizes = chunk_sizes
+        self.iteration_count = 0
+
+    async def __aiter__(self):
+        for size in self.chunk_sizes:
+            self.iteration_count += 1
+            yield b"z" * size
+
+    async def aclose(self) -> None:
+        return None
 
 
 def _issue_payload(number: int = 7) -> dict[str, object]:
@@ -36,6 +51,7 @@ def _repository_payload(**overrides: object) -> dict[str, object]:
         "default_branch": "main",
         "size": 1_024,
         "private": False,
+        "language": "Python",
         "html_url": "https://github.com/openai/codex",
     }
     payload.update(overrides)
@@ -79,13 +95,14 @@ async def test_client_fetches_read_only_metadata_and_sha_then_downloads_codeload
         issue = await client.fetch_issue(COORDINATES, 7)
         repository = await client.fetch_repository(COORDINATES)
         head_sha = await client.fetch_default_branch_head(COORDINATES, "main")
-        commits = await client.fetch_recent_commits(COORDINATES, limit=5)
+        commits = await client.fetch_recent_commits(COORDINATES, sha=head_sha, limit=5)
         related = await client.fetch_related_issues(COORDINATES, "parser aliases", limit=5)
         archive = await client.download_archive(COORDINATES, head_sha)
 
     assert issue.number == 7
     assert repository.default_branch == "main"
     assert repository.size_kb == 1_024
+    assert repository.language == "Python"
     assert head_sha == SHA
     assert commits[0].committed_at == datetime(2026, 8, 28, 12, 30, tzinfo=UTC)
     assert related[0].number == 8
@@ -102,6 +119,23 @@ async def test_client_fetches_read_only_metadata_and_sha_then_downloads_codeload
     ]
     assert all(headers["authorization"] == "Bearer test-token" for headers in api_headers)
     assert all("authorization" not in headers for headers in codeload_headers)
+
+
+@pytest.mark.anyio
+async def test_recent_commits_query_is_anchored_to_resolved_sha() -> None:
+    """Breaks if history can drift to a newer default-branch head during analysis."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/openai/codex/commits"
+        assert request.url.params["sha"] == SHA
+        assert request.url.params["per_page"] == "5"
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        commits = await GithubClient(http).fetch_recent_commits(
+            COORDINATES, sha=SHA, limit=5
+        )
+
+    assert commits == ()
 
 
 @pytest.mark.anyio
@@ -154,6 +188,60 @@ async def test_client_maps_http_failures_to_safe_typed_errors(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("headers", "payload", "expected_error"),
+    [
+        (
+            {"Retry-After": "60"},
+            {"message": "Please wait before retrying secret request"},
+            GithubRateLimitError,
+        ),
+        (
+            {},
+            {
+                "message": "API rate limit exceeded for 192.0.2.1.",
+                "documentation_url": "https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api",
+                "status": "403",
+            },
+            GithubRateLimitError,
+        ),
+        (
+            {},
+            {
+                "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+                "documentation_url": "https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api",
+                "status": "403",
+            },
+            GithubRateLimitError,
+        ),
+        (
+            {},
+            {"message": "Repository documentation mentions rate limits: secret"},
+            GithubUpstreamError,
+        ),
+        ({}, {"message": ["API rate limit exceeded"]}, GithubUpstreamError),
+        ({}, ["API rate limit exceeded"], GithubUpstreamError),
+    ],
+)
+async def test_client_classifies_complete_secondary_rate_limit_response_shapes(
+    headers: dict[str, str],
+    payload: object,
+    expected_error: type[Exception],
+) -> None:
+    """Breaks if documented rate-limit signals are missed or arbitrary bodies match."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, headers=headers, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(expected_error) as caught:
+            await GithubClient(http).fetch_repository(COORDINATES)
+
+    assert "secret" not in str(caught.value)
+    assert "192.0.2.1" not in str(caught.value)
+    assert "Please wait a few minutes" not in str(caught.value)
+
+
+@pytest.mark.anyio
 async def test_client_maps_timeout_to_safe_typed_error() -> None:
     """Breaks if transport timeouts escape as unhandled httpx exceptions."""
     def handler(request: httpx.Request) -> httpx.Response:
@@ -164,6 +252,28 @@ async def test_client_maps_timeout_to_safe_typed_error() -> None:
             await GithubClient(http).fetch_repository(COORDINATES)
 
     assert "token" not in str(caught.value)
+
+
+@pytest.mark.anyio
+async def test_issue_endpoint_rejects_pull_request_payload_as_not_found() -> None:
+    """Breaks if a pull request number can satisfy the bug-issue input contract."""
+    payload = {
+        **_issue_payload(),
+        "pull_request": {
+            "url": "https://api.github.com/repos/openai/codex/pulls/7",
+            "html_url": "https://github.com/openai/codex/pull/7",
+            "diff_url": "https://github.com/openai/codex/pull/7.diff",
+            "patch_url": "https://github.com/openai/codex/pull/7.patch",
+            "merged_at": None,
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(RepositoryNotFoundError):
+            await GithubClient(http).fetch_issue(COORDINATES, 7)
 
 
 @pytest.mark.anyio
@@ -187,12 +297,46 @@ async def test_client_never_follows_redirects_outside_the_host_allowlist() -> No
 
 
 @pytest.mark.anyio
+async def test_archive_download_rejects_oversized_content_length_before_iteration() -> None:
+    """Breaks if an announced oversized codeload body is read into memory."""
+    stream = _CountingAsyncStream([1])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Length": "50000001"},
+            stream=stream,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(ArchiveDownloadLimitError):
+            await GithubClient(http).download_archive(COORDINATES, SHA)
+
+    assert stream.iteration_count == 0
+
+
+@pytest.mark.anyio
+async def test_archive_download_stops_stream_at_first_byte_above_50_000_000() -> None:
+    """Breaks if an unannounced oversized codeload stream is fully buffered."""
+    stream = _CountingAsyncStream([30_000_000, 20_000_000, 1, 1_000_000])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(ArchiveDownloadLimitError):
+            await GithubClient(http).download_archive(COORDINATES, SHA)
+
+    assert stream.iteration_count == 3
+
+
+@pytest.mark.anyio
 async def test_client_treats_private_and_oversized_repositories_as_domain_failures() -> None:
-    """Breaks if private source or metadata above 50 MiB reaches archive download."""
+    """Breaks if private source or metadata above 50,000 KB reaches download."""
     payloads = iter(
         [
             _repository_payload(private=True),
-            _repository_payload(size=50 * 1_024 + 1),
+            _repository_payload(size=50_001),
         ]
     )
 
@@ -205,6 +349,18 @@ async def test_client_treats_private_and_oversized_repositories_as_domain_failur
             await client.fetch_repository(COORDINATES)
         with pytest.raises(RepositoryTooLargeError):
             await client.fetch_repository(COORDINATES)
+
+
+@pytest.mark.anyio
+async def test_client_accepts_repository_metadata_at_exact_50_000_kb_limit() -> None:
+    """Breaks if the documented metadata ceiling rejects its exact boundary."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_repository_payload(size=50_000))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        repository = await GithubClient(http).fetch_repository(COORDINATES)
+
+    assert repository.size_kb == 50_000
 
 
 @pytest.mark.anyio

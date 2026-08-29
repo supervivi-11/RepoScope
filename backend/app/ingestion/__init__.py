@@ -8,6 +8,7 @@ from .domain import (
     validate_issue_number,
 )
 from .errors import (
+    ArchiveDownloadLimitError,
     GithubRateLimitError,
     GithubTimeoutError,
     GithubUpstreamError,
@@ -18,12 +19,14 @@ from .errors import (
     RepositoryTooLargeError,
     SnapshotScopeError,
     SourceLimitError,
+    UnsupportedRepositoryLanguageError,
     UnsafeArchiveError,
 )
 from .github import GithubClient
 from .service import IngestionResult, IngestionService, SnapshotCleaner
 
 __all__ = [
+    "ArchiveDownloadLimitError",
     "CommitMetadata",
     "ExtractionResult",
     "GithubIssue",
@@ -45,6 +48,7 @@ __all__ = [
     "SnapshotScopeError",
     "SnapshotCleaner",
     "SourceLimitError",
+    "UnsupportedRepositoryLanguageError",
     "UnsafeArchiveError",
     "validate_issue_number",
 ]

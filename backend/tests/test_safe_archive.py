@@ -36,10 +36,12 @@ def test_extractor_retains_only_static_text_context_and_counts_written_bytes(
         "repo-sha/docs/readme.md": b"# Demo\n",
         "repo-sha/config.yaml": b"enabled: true\n",
         "repo-sha/data.json": b'{"kind":"fixture"}\n',
+        "repo-sha/.github/workflows/ci.yml": b"name: CI\n",
     }
     ignored = {
         "repo-sha/.git/config.py": b"do_not_keep = True\n",
         "repo-sha/.github/workflows/check.py": b"do_not_keep = True\n",
+        "repo-sha/.github/CONTRIBUTING.md": b"do not keep\n",
         "repo-sha/.venv/lib/site.py": b"do_not_keep = True\n",
         "repo-sha/venv/lib/site.py": b"do_not_keep = True\n",
         "repo-sha/node_modules/pkg/index.py": b"do_not_keep = True\n",
@@ -132,19 +134,49 @@ def test_extractor_maps_file_directory_collisions_to_an_unsafe_archive_error(
         SafeArchiveExtractor().extract(archive, tmp_path / "snapshot")
 
 
-def test_extractor_rejects_a_retained_file_above_500_kib(tmp_path) -> None:
+def test_extractor_accepts_a_retained_file_at_exact_500_000_byte_limit(tmp_path) -> None:
+    """Breaks if the documented per-file ceiling rejects its exact boundary."""
+    content = b"a" * 500_000
+
+    result = SafeArchiveExtractor().extract(
+        _zip_bytes({"repo-sha/large.py": content}), tmp_path / "snapshot"
+    )
+
+    assert result.indexed_byte_count == 500_000
+
+
+def test_extractor_rejects_a_retained_file_above_500_000_bytes(tmp_path) -> None:
     """Breaks if one source file can exceed the per-file extraction budget."""
-    archive = _zip_bytes({"repo-sha/large.py": b"a" * (500 * 1_024 + 1)})
+    archive = _zip_bytes({"repo-sha/large.py": b"a" * 500_001})
 
     with pytest.raises(SourceLimitError):
         SafeArchiveExtractor().extract(archive, tmp_path / "snapshot")
 
 
-def test_extractor_rejects_total_retained_bytes_above_10_mib(tmp_path) -> None:
+def test_extractor_accepts_total_retained_bytes_at_exact_10_000_000_limit(
+    tmp_path,
+) -> None:
+    """Breaks if the aggregate retained-byte ceiling rejects its exact boundary."""
+    entries = {
+        f"repo-sha/src/file_{index}.py": b"a" * 500_000
+        for index in range(20)
+    }
+
+    result = SafeArchiveExtractor().extract(
+        _zip_bytes(entries), tmp_path / "snapshot"
+    )
+
+    assert result.indexed_byte_count == 10_000_000
+
+
+def test_extractor_rejects_total_retained_bytes_above_10_000_000(tmp_path) -> None:
     """Breaks if many individually valid files can exceed the total source budget."""
     entries = {
-        f"repo-sha/src/file_{index}.py": b"a" * (500 * 1_024)
-        for index in range(21)
+        **{
+            f"repo-sha/src/file_{index}.py": b"a" * 500_000
+            for index in range(20)
+        },
+        "repo-sha/src/overflow.py": b"a",
     }
 
     with pytest.raises(SourceLimitError):

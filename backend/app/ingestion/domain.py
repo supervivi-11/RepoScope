@@ -21,7 +21,14 @@ class RepositoryCoordinates:
     def parse(cls, raw_url: str) -> RepositoryCoordinates:
         if not isinstance(raw_url, str):
             raise InvalidRepositoryInputError()
-        parsed = urlsplit(raw_url)
+        if raw_url != raw_url.strip() or any(
+            ord(character) < 32 or ord(character) == 127 for character in raw_url
+        ):
+            raise InvalidRepositoryInputError()
+        try:
+            parsed = urlsplit(raw_url)
+        except ValueError as exc:
+            raise InvalidRepositoryInputError() from exc
         if (
             parsed.scheme != "https"
             or parsed.hostname != "github.com"
@@ -79,6 +86,7 @@ class RepositoryMetadata:
     default_branch: str
     size_kb: int
     html_url: str
+    language: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

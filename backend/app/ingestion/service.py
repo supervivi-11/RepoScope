@@ -17,7 +17,7 @@ from .domain import (
     RepositorySnapshot,
     validate_issue_number,
 )
-from .errors import SnapshotScopeError
+from .errors import SnapshotScopeError, UnsupportedRepositoryLanguageError
 from .github import GithubClient
 
 if TYPE_CHECKING:
@@ -72,7 +72,9 @@ class IngestionService:
         commit_sha = await self._github.fetch_default_branch_head(
             coordinates, repository.default_branch
         )
-        recent_commits = await self._github.fetch_recent_commits(coordinates)
+        recent_commits = await self._github.fetch_recent_commits(
+            coordinates, sha=commit_sha
+        )
         related_issues = await self._github.fetch_related_issues(
             coordinates, issue.title
         )
@@ -87,6 +89,11 @@ class IngestionService:
         ).resolve()
         try:
             extraction = self._extractor.extract(archive_bytes, snapshot_path)
+            if not any(
+                Path(relative_file).suffix.casefold() in {".py", ".pyi"}
+                for relative_file in extraction.relative_files
+            ):
+                raise UnsupportedRepositoryLanguageError()
             snapshot = RepositorySnapshot.create(
                 owner=coordinates.owner,
                 repository=coordinates.repository,

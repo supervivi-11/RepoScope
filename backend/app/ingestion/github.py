@@ -16,6 +16,7 @@ from .domain import (
     validate_issue_number,
 )
 from .errors import (
+    ArchiveDownloadLimitError,
     GithubRateLimitError,
     GithubTimeoutError,
     GithubUpstreamError,
@@ -31,7 +32,8 @@ _API_ORIGIN = "https://api.github.com"
 _CODELOAD_ORIGIN = "https://codeload.github.com"
 _ALLOWED_HOSTS = {"api.github.com", "codeload.github.com"}
 _SHA_PATTERN = re.compile(r"[0-9a-fA-F]{40}\Z")
-_MAX_REPOSITORY_KB = 50 * 1_024
+_MAX_REPOSITORY_KB = 50_000
+_MAX_ARCHIVE_RESPONSE_BYTES = 50_000_000
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0)
 
 
@@ -77,6 +79,7 @@ class GithubClient:
 
         owner_payload = payload.get("owner")
         size_kb = payload.get("size")
+        language = payload.get("language")
         if (
             not isinstance(owner_payload, Mapping)
             or not isinstance(owner_payload.get("login"), str)
@@ -86,6 +89,7 @@ class GithubClient:
             or type(size_kb) is not int
             or size_kb < 0
             or not isinstance(payload.get("html_url"), str)
+            or (language is not None and not isinstance(language, str))
         ):
             raise MalformedGithubResponseError()
         if size_kb > _MAX_REPOSITORY_KB:
@@ -96,6 +100,7 @@ class GithubClient:
             default_branch=payload["default_branch"],
             size_kb=size_kb,
             html_url=payload["html_url"],
+            language=language,
         )
 
     async def fetch_default_branch_head(
@@ -112,11 +117,17 @@ class GithubClient:
         return sha.lower()
 
     async def fetch_recent_commits(
-        self, coordinates: RepositoryCoordinates, *, limit: int = 10
+        self,
+        coordinates: RepositoryCoordinates,
+        *,
+        sha: str,
+        limit: int = 10,
     ) -> tuple[CommitMetadata, ...]:
+        if not _SHA_PATTERN.fullmatch(sha):
+            raise MalformedGithubResponseError()
         payload = await self._request_json(
             f"{_API_ORIGIN}/repos/{coordinates.owner}/{coordinates.repository}/commits",
-            params={"per_page": str(limit)},
+            params={"sha": sha.lower(), "per_page": str(limit)},
             expect_mapping=False,
         )
         if not isinstance(payload, list):
@@ -147,11 +158,54 @@ class GithubClient:
     ) -> bytes:
         if not _SHA_PATTERN.fullmatch(commit_sha):
             raise MalformedGithubResponseError()
-        response = await self._request(
+        url = (
             f"{_CODELOAD_ORIGIN}/{coordinates.owner}/{coordinates.repository}"
             f"/zip/{commit_sha.lower()}"
         )
-        return response.content
+        headers = {
+            "Accept": "application/zip",
+            "User-Agent": "RepoScope/0.1",
+        }
+        try:
+            async with self._http.stream(
+                "GET",
+                url,
+                headers=headers,
+                timeout=_DEFAULT_TIMEOUT,
+                follow_redirects=False,
+            ) as response:
+                if response.status_code == 404:
+                    raise RepositoryNotFoundError()
+                if response.status_code == 429 or (
+                    response.status_code == 403
+                    and (
+                        response.headers.get("X-RateLimit-Remaining") == "0"
+                        or "Retry-After" in response.headers
+                    )
+                ):
+                    raise GithubRateLimitError()
+                if not response.is_success:
+                    raise GithubUpstreamError()
+
+                announced_size = response.headers.get("Content-Length")
+                if announced_size is not None:
+                    try:
+                        exceeds_limit = int(announced_size) > _MAX_ARCHIVE_RESPONSE_BYTES
+                    except ValueError:
+                        exceeds_limit = False
+                    if exceeds_limit:
+                        raise ArchiveDownloadLimitError()
+
+                archive = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(archive) + len(chunk) > _MAX_ARCHIVE_RESPONSE_BYTES:
+                        raise ArchiveDownloadLimitError()
+                    archive.extend(chunk)
+                return bytes(archive)
+        except httpx.TimeoutException as exc:
+            raise GithubTimeoutError() from exc
+        except httpx.RequestError as exc:
+            raise GithubUpstreamError() from exc
 
     async def _request_json(
         self,
@@ -200,19 +254,43 @@ class GithubClient:
             raise GithubUpstreamError() from exc
         if response.status_code == 404:
             raise RepositoryNotFoundError()
-        if response.status_code == 429 or (
-            response.status_code == 403
-            and response.headers.get("X-RateLimit-Remaining") == "0"
-        ):
+        if self._is_rate_limited(response):
             raise GithubRateLimitError()
         if not response.is_success:
             raise GithubUpstreamError()
         return response
 
     @staticmethod
+    def _is_rate_limited(response: httpx.Response) -> bool:
+        if response.status_code == 429:
+            return True
+        if response.status_code != 403:
+            return False
+        if (
+            response.headers.get("X-RateLimit-Remaining") == "0"
+            or "Retry-After" in response.headers
+        ):
+            return True
+        try:
+            payload = response.json()
+        except ValueError:
+            return False
+        if not isinstance(payload, Mapping):
+            return False
+        message = payload.get("message")
+        if not isinstance(message, str):
+            return False
+        normalized = message.casefold()
+        return normalized.startswith("api rate limit exceeded") or normalized.startswith(
+            "you have exceeded a secondary rate limit"
+        )
+
+    @staticmethod
     def _parse_issue(payload: object) -> GithubIssue:
         if not isinstance(payload, Mapping):
             raise MalformedGithubResponseError()
+        if "pull_request" in payload:
+            raise RepositoryNotFoundError()
         number = payload.get("number")
         title = payload.get("title")
         body = payload.get("body")

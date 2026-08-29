@@ -17,6 +17,7 @@ from app.ingestion import (
     SafeArchiveExtractor,
     SnapshotCleaner,
     SnapshotScopeError,
+    UnsupportedRepositoryLanguageError,
     UnsafeArchiveError,
 )
 
@@ -32,7 +33,7 @@ def _archive_bytes(entries: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def _github_handler(archive_bytes: bytes):
+def _github_handler(archive_bytes: bytes, *, language: str | None = "Python"):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/repos/openai/codex":
             return httpx.Response(
@@ -43,6 +44,7 @@ def _github_handler(archive_bytes: bytes):
                     "default_branch": "main",
                     "size": 100,
                     "private": False,
+                    "language": language,
                     "html_url": "https://github.com/openai/codex",
                 },
             )
@@ -70,6 +72,7 @@ def _github_handler(archive_bytes: bytes):
                 },
             )
         if request.url.path == "/repos/openai/codex/commits":
+            assert request.url.params["sha"] == SHA
             return httpx.Response(200, json=[])
         if request.url.path == "/search/issues":
             return httpx.Response(200, json={"total_count": 0, "items": []})
@@ -116,6 +119,7 @@ async def test_ingestion_service_builds_immutable_snapshot_from_resolved_sha(
         default_branch="main",
         size_kb=100,
         html_url="https://github.com/openai/codex",
+        language="Python",
     )
     assert result.recent_commits == ()
     assert result.related_issues == ()
@@ -150,6 +154,75 @@ async def test_ingestion_service_removes_partial_snapshot_when_archive_is_unsafe
 
     assert list(snapshot_root.iterdir()) == []
     assert not (tmp_path / "escape.py").exists()
+
+
+@pytest.mark.anyio
+async def test_ingestion_rejects_snapshot_without_retained_python_source(tmp_path) -> None:
+    """Breaks if a repository label can substitute for actual retained Python source."""
+    archive = _archive_bytes({f"codex-{SHA}/README.md": b"# No Python here\n"})
+    snapshot_root = tmp_path / "snapshots"
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_github_handler(archive, language="Python"))
+    ) as http:
+        service = IngestionService(
+            GithubClient(http),
+            SafeArchiveExtractor(),
+            snapshot_root=snapshot_root,
+            clock=lambda: NOW,
+        )
+        with pytest.raises(UnsupportedRepositoryLanguageError):
+            await service.ingest("https://github.com/openai/codex", 7)
+
+    assert list(snapshot_root.iterdir()) == []
+
+
+@pytest.mark.anyio
+async def test_ingestion_accepts_polyglot_repository_with_retained_python_source(
+    tmp_path,
+) -> None:
+    """Breaks if GitHub primary-language metadata wrongly rejects Python source."""
+    archive = _archive_bytes(
+        {
+            f"codex-{SHA}/src/parser.py": b"def parse():\n    return True\n",
+            f"codex-{SHA}/web/app.js": b"ignored",
+        }
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_github_handler(archive, language="JavaScript"))
+    ) as http:
+        result = await IngestionService(
+            GithubClient(http),
+            SafeArchiveExtractor(),
+            snapshot_root=tmp_path / "snapshots",
+            clock=lambda: NOW,
+        ).ingest("https://github.com/openai/codex", 7)
+
+    assert result.repository.language == "JavaScript"
+    assert (result.snapshot.root_path / "src/parser.py").is_file()
+
+
+@pytest.mark.anyio
+async def test_ingestion_accepts_snapshot_with_python_stub_as_only_python_source(
+    tmp_path,
+) -> None:
+    """Breaks if `.pyi` stubs stop satisfying the Python-only source contract."""
+    archive = _archive_bytes(
+        {f"codex-{SHA}/src/parser.pyi": b"def parse() -> bool: ...\n"}
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_github_handler(archive, language="C"))
+    ) as http:
+        result = await IngestionService(
+            GithubClient(http),
+            SafeArchiveExtractor(),
+            snapshot_root=tmp_path / "snapshots",
+            clock=lambda: NOW,
+        ).ingest("https://github.com/openai/codex", 7)
+
+    assert (result.snapshot.root_path / "src/parser.pyi").is_file()
 
 
 def _snapshot(path, *, deadline: datetime) -> RepositorySnapshot:

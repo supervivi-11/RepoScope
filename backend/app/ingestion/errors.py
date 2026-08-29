@@ -35,6 +35,14 @@ class RepositoryTooLargeError(IngestionError):
     safe_message = "The repository is larger than the 50 MB limit."
 
 
+class ArchiveDownloadLimitError(IngestionError):
+    safe_message = "The repository archive download exceeds the 50 MB limit."
+
+
+class UnsupportedRepositoryLanguageError(IngestionError):
+    safe_message = "The repository does not contain retained Python source."
+
+
 class UnsafeArchiveError(IngestionError):
     safe_message = "The repository archive contains an unsafe entry."
 

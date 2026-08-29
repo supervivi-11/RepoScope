@@ -22,7 +22,6 @@ _RETAINED_EXTENSIONS = {
 }
 _IGNORED_DIRECTORIES = {
     ".git",
-    ".github",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
@@ -34,8 +33,8 @@ _IGNORED_DIRECTORIES = {
     "vendor",
     "venv",
 }
-_MAX_FILE_BYTES = 500 * 1_024
-_MAX_TOTAL_BYTES = 10 * 1_024 * 1_024
+_MAX_FILE_BYTES = 500_000
+_MAX_TOTAL_BYTES = 10_000_000
 _READ_CHUNK_BYTES = 64 * 1_024
 
 
@@ -144,7 +143,18 @@ class SafeArchiveExtractor:
 
     @staticmethod
     def _is_ignored(parts: tuple[str, ...]) -> bool:
-        return any(part.casefold() in _IGNORED_DIRECTORIES for part in parts[:-1])
+        folded_parts = tuple(part.casefold() for part in parts)
+        directories = folded_parts[:-1]
+        if ".github" in directories:
+            github_index = directories.index(".github")
+            is_workflow_yaml = (
+                github_index + 1 < len(directories)
+                and directories[github_index + 1] == "workflows"
+                and Path(parts[-1]).suffix.casefold() in {".yaml", ".yml"}
+            )
+            if not is_workflow_yaml:
+                return True
+        return any(part in _IGNORED_DIRECTORIES for part in directories)
 
     @staticmethod
     def _is_binary(content: bytes) -> bool:

@@ -61,6 +61,31 @@ def test_repository_coordinates_reject_everything_outside_the_public_contract(
         RepositoryCoordinates.parse(raw_url)
 
 
+@pytest.mark.parametrize(
+    "raw_url",
+    [
+        " https://github.com/openai/codex",
+        "\thttps://github.com/openai/codex",
+        "\nhttps://github.com/openai/codex",
+        "https://github.com/openai/codex ",
+        "https://github.com/openai/codex\r",
+        "https://github.com/openai/co\ndex",
+    ],
+)
+def test_repository_coordinates_reject_raw_whitespace_and_controls(
+    raw_url: str,
+) -> None:
+    """Breaks if URL preprocessing silently normalizes ambiguous raw input."""
+    with pytest.raises(InvalidRepositoryInputError):
+        RepositoryCoordinates.parse(raw_url)
+
+
+def test_repository_coordinates_map_urlsplit_value_error_to_domain_error() -> None:
+    """Breaks if malformed authority syntax escapes as an untyped parser error."""
+    with pytest.raises(InvalidRepositoryInputError):
+        RepositoryCoordinates.parse("https://[github.com/openai/codex")
+
+
 @pytest.mark.parametrize("issue_number", [1, 42, 2_147_483_647])
 def test_issue_number_accepts_positive_integers(issue_number: int) -> None:
     """Breaks if a valid GitHub issue identifier is rejected or changed."""
