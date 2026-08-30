@@ -626,8 +626,10 @@ def _normalize_relative_path(path: str, *, allow_trailing: bool = False) -> str:
         raise InvalidSourcePathError("Absolute source paths are not allowed.")
     if allow_trailing:
         normalized = normalized.rstrip("/")
+    if not normalized or any(part in {"", ".", ".."} for part in normalized.split("/")):
+        raise InvalidSourcePathError("Source path traversal is not allowed.")
     pure = PurePosixPath(normalized)
-    if not normalized or any(part in {"", ".", ".."} for part in pure.parts):
+    if any(part in {"", ".", ".."} for part in pure.parts):
         raise InvalidSourcePathError("Source path traversal is not allowed.")
     return pure.as_posix()
 

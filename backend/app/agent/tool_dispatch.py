@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.investigation import InvestigationTools, SourceExcerpt
+from app.investigation.tools import _normalize_relative_path
 
 from .models import EvidenceCitation, ToolRequest, ToolResultSummary
 
@@ -43,7 +44,11 @@ class SearchCodeArguments(_ToolArguments):
     @field_validator("path_prefix")
     @classmethod
     def _normalized_optional_prefix(cls, value: str | None) -> str | None:
-        return _validate_relative_path(value) if value is not None else None
+        return (
+            _normalize_relative_path(value, allow_trailing=True)
+            if value is not None
+            else None
+        )
 
 
 class ReadCodeArguments(_ToolArguments):
@@ -54,7 +59,7 @@ class ReadCodeArguments(_ToolArguments):
     @field_validator("path")
     @classmethod
     def _normalized_path(cls, value: str) -> str:
-        return _validate_relative_path(value)
+        return _normalize_relative_path(value)
 
     @field_validator("end_line")
     @classmethod
@@ -87,7 +92,7 @@ class GetRecentCommitsArguments(_ToolArguments):
     @field_validator("path")
     @classmethod
     def _normalized_optional_path(cls, value: str | None) -> str | None:
-        return _validate_relative_path(value) if value is not None else None
+        return _normalize_relative_path(value) if value is not None else None
 
 
 class GetRelatedIssuesArguments(_ToolArguments):
@@ -120,7 +125,7 @@ async def dispatch_tool_request(
     if argument_model is None:
         return _failed(tool_name, "Unsupported investigation tool.")
     try:
-        arguments = argument_model.model_validate(request.arguments)
+        arguments = argument_model.model_validate(request.arguments_dict())
     except (ValidationError, ValueError):
         return _failed(tool_name, "Invalid investigation tool arguments.")
 
@@ -149,25 +154,11 @@ async def dispatch_tool_request(
 
 def _failed(tool_name: str, safe_error: str) -> ToolResultSummary:
     return ToolResultSummary(
-        tool_name=tool_name or "unknown",
+        tool_name=tool_name if tool_name in ALLOWED_TOOL_NAMES else "unknown",
         arguments_summary="rejected",
         succeeded=False,
         safe_error=safe_error,
     )
-
-
-def _validate_relative_path(value: str) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or "\\" in value
-        or "\x00" in value
-        or value.startswith("/")
-        or value.endswith("/")
-        or any(part in {"", ".", ".."} for part in value.split("/"))
-    ):
-        raise ValueError("path must be normalized and relative")
-    return value
 
 
 def _arguments_summary(tool_name: str, arguments: _ToolArguments) -> str:
@@ -213,7 +204,7 @@ def _extract_citations(result: Any) -> tuple[EvidenceCitation, ...]:
             item.excerpt,
         )
         unique.setdefault(key, item)
-    return tuple(unique.values())
+    return tuple(unique[key] for key in sorted(unique))[:32]
 
 
 def _result_summary(

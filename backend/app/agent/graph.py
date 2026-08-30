@@ -11,7 +11,6 @@ from .gateway import (
     ModelGateway,
     ModelGatewayError,
     ModelPhase,
-    TransientModelError,
     invoke_structured,
 )
 from .models import (
@@ -94,7 +93,7 @@ def build_investigation_graph(
                 "events": state.events + (event,),
             }
         except ModelGatewayError as exc:
-            attempts = _failed_model_attempts(exc, active_budget)
+            attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(
                 update={"model_attempts": counters.model_attempts + attempts}
             )
@@ -160,7 +159,7 @@ def build_investigation_graph(
                 )
             return update
         except ModelGatewayError as exc:
-            attempts = _failed_model_attempts(exc, active_budget)
+            attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(
                 update={"model_attempts": counters.model_attempts + attempts}
             )
@@ -267,7 +266,7 @@ def build_investigation_graph(
                 "critique_sufficient": critique.sufficient,
             }
         except ModelGatewayError as exc:
-            attempts = _failed_model_attempts(exc, active_budget)
+            attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(
                 update={"model_attempts": counters.model_attempts + attempts}
             )
@@ -306,7 +305,7 @@ def build_investigation_graph(
                 "events": state.events + (event,),
             }
         except ModelGatewayError as exc:
-            attempts = _failed_model_attempts(exc, active_budget)
+            attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(
                 update={"model_attempts": counters.model_attempts + attempts}
             )
@@ -493,7 +492,7 @@ def build_investigation_graph(
                 "pending_feedback": None,
             }
         except ModelGatewayError as exc:
-            attempts = _failed_model_attempts(exc, active_budget)
+            attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(
                 update={"model_attempts": counters.model_attempts + attempts}
             )
@@ -617,7 +616,10 @@ def _route_after_critique(
 ) -> str:
     if state.critique_sufficient:
         return "compose"
-    if state.counters.evidence_rounds >= budget.max_evidence_rounds:
+    if (
+        state.counters.tool_calls >= budget.max_tool_calls
+        or state.counters.evidence_rounds >= budget.max_evidence_rounds
+    ):
         return "compose"
     return "investigate"
 
@@ -684,10 +686,8 @@ def _model_failure_update(
     return update
 
 
-def _failed_model_attempts(
-    failure: ModelGatewayError, budget: InvestigationBudget
-) -> int:
-    return budget.model_retries + 1 if isinstance(failure, TransientModelError) else 1
+def _failed_model_attempts(failure: ModelGatewayError) -> int:
+    return failure.attempts
 
 
 def _investigation_context(state: AnalysisState) -> dict[str, Any]:

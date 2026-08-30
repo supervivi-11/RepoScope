@@ -12,6 +12,7 @@ from app.agent import (
     FeedbackCommand,
     Hypothesis,
     InvestigationBudget,
+    ToolRequest,
 )
 
 
@@ -41,8 +42,6 @@ def test_agent_contracts_are_frozen_extra_forbidding_and_validate_ranges() -> No
         EvidenceCitation(**{**citation.model_dump(), "unknown": True})
     with pytest.raises(ValidationError):
         _citation(start_line=3, end_line=2)
-    with pytest.raises(ValidationError):
-        _citation(path="src\\parser.py")
     with pytest.raises(ValidationError):
         Hypothesis(
             statement="Cause",
@@ -132,3 +131,40 @@ def test_report_requires_confidence_in_closed_unit_interval() -> None:
 
     with pytest.raises(ValidationError):
         AnalysisReport(**{**report.model_dump(), "confidence": -0.01})
+
+
+def test_evidence_paths_share_the_task_three_normalizer() -> None:
+    """Breaks if citation identity and tool path checks diverge."""
+    assert _citation(path="src\\parser.py").path == "src/parser.py"
+    for path in ("C:/private.py", " src/parser.py", "src/../parser.py", "src//parser.py"):
+        with pytest.raises(ValidationError):
+            _citation(path=path)
+
+
+def test_tool_request_arguments_are_deeply_immutable_and_json_checkpoint_safe() -> None:
+    """Breaks if a model request can mutate after checkpointing or carry arbitrary objects."""
+    raw_arguments = {"path": "src/parser.py", "start_line": 1, "end_line": 2}
+    request = ToolRequest(tool_name="read_code", arguments=raw_arguments)
+    raw_arguments["path"] = "src/secret.py"
+
+    assert request.arguments_dict() == {
+        "end_line": 2,
+        "path": "src/parser.py",
+        "start_line": 1,
+    }
+    with pytest.raises((TypeError, ValidationError)):
+        request.arguments[0].value = "mutated"
+    assert ToolRequest.model_validate_json(request.model_dump_json()) == request
+
+    with pytest.raises(ValidationError):
+        ToolRequest(
+            tool_name="read_code",
+            arguments=(
+                {"key": "path", "value": "src/parser.py"},
+                {"key": "path", "value": "src/other.py"},
+            ),
+        )
+    with pytest.raises(ValidationError):
+        ToolRequest(tool_name="read_code", arguments={"path": {"nested": True}})
+    with pytest.raises(ValidationError):
+        ToolRequest(tool_name="read_code", arguments={"path": object()})

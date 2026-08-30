@@ -9,6 +9,8 @@ from app.agent import (
     AnalysisReport,
     EvidenceCitation,
     Hypothesis,
+    ImpactedFile,
+    ProposedTest,
     downgrade_unsubstantiated_report,
     validate_evidence,
 )
@@ -107,3 +109,52 @@ def test_report_without_valid_primary_evidence_is_downgraded(tmp_path: Path) -> 
     assert downgraded.confidence <= 0.25
     assert downgraded.implementation_steps == ()
     assert any("primary" in item.lower() for item in downgraded.uncertainties)
+
+
+def test_no_evidence_downgrade_replaces_all_model_authored_free_text(tmp_path: Path) -> None:
+    """Breaks if a fabricated deterministic claim survives an evidence downgrade."""
+    invalid = _citation(excerpt="fabricated\n")
+    malicious = "ROOT CAUSE: leak sk-secret-value"
+    report = AnalysisReport(
+        outcome="root_cause_identified",
+        issue_summary=malicious,
+        observed_behavior=malicious,
+        expected_behavior=malicious,
+        primary_hypothesis=Hypothesis(
+            statement=malicious, confidence=0.9, evidence=(invalid,)
+        ),
+        alternative_hypotheses=(
+            Hypothesis(statement=malicious, confidence=0.8, evidence=(invalid,)),
+        ),
+        evidence=(invalid,),
+        impacted_files=(ImpactedFile(path="src/parser.py", explanation=malicious),),
+        implementation_steps=(malicious,),
+        proposed_tests=(ProposedTest(name=malicious, description=malicious),),
+        uncertainties=(malicious,),
+        confidence=0.9,
+    )
+
+    downgraded, _ = downgrade_unsubstantiated_report(_index(tmp_path), report)
+
+    serialized = downgraded.model_dump_json()
+    assert downgraded.outcome == "insufficient_evidence"
+    assert downgraded.issue_summary == (
+        "Insufficient validated evidence is available to determine the root cause."
+    )
+    assert downgraded.observed_behavior == (
+        "The available investigation evidence is insufficient to verify observed behavior."
+    )
+    assert downgraded.expected_behavior == (
+        "The expected behavior cannot be verified from the available investigation evidence."
+    )
+    assert downgraded.primary_hypothesis is None
+    assert downgraded.alternative_hypotheses == ()
+    assert downgraded.impacted_files == ()
+    assert downgraded.implementation_steps == ()
+    assert downgraded.proposed_tests == ()
+    assert downgraded.uncertainties == (
+        "The root cause remains unknown because no validated primary evidence is available.",
+    )
+    assert downgraded.confidence <= 0.25
+    assert malicious not in serialized
+    assert "sk-secret-value" not in serialized

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, TypeVar
 
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,6 +20,8 @@ class ModelPhase(StrEnum):
 
 class ModelGatewayError(Exception):
     """A typed model boundary failure safe for graph-level classification."""
+
+    attempts: int = 1
 
 
 class TransientModelError(ModelGatewayError):
@@ -75,12 +78,18 @@ async def invoke_structured(
                 response_model=response_model,
                 context=context,
             )
-        except TransientModelError:
+        except TransientModelError as exc:
             if attempts > retries:
+                exc.attempts = attempts
                 raise
             continue
+        except ModelGatewayError as exc:
+            exc.attempts = attempts
+            raise
         if not isinstance(result, response_model):
-            raise ModelSchemaError("The model returned an unexpected schema.")
+            exc = ModelSchemaError("The model returned an unexpected schema.")
+            exc.attempts = attempts
+            raise exc
         return ModelCallResult(value=result, attempts=attempts)
 
 
@@ -112,6 +121,7 @@ class OpenAICompatibleGateway:
             api_key=settings.api_key,
             base_url=settings.base_url,
             temperature=0,
+            max_retries=0,
         )
 
     @classmethod
@@ -148,7 +158,13 @@ class OpenAICompatibleGateway:
             result = await structured.ainvoke(messages)
         except ValidationError as exc:
             raise ModelSchemaError("The model response failed schema validation.") from exc
-        except (TimeoutError, ConnectionError) as exc:
+        except (
+            TimeoutError,
+            ConnectionError,
+            APITimeoutError,
+            APIConnectionError,
+            RateLimitError,
+        ) as exc:
             raise TransientModelError("The model provider is temporarily unavailable.") from exc
         except ModelGatewayError:
             raise

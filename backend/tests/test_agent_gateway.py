@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 
+import httpx
 import pytest
 
 from app.agent import (
@@ -11,6 +12,8 @@ from app.agent import (
     ModelSchemaError,
     PermanentModelError,
     TransientModelError,
+    OpenAICompatibleGateway,
+    OpenAIModelSettings,
     invoke_structured,
 )
 
@@ -111,3 +114,72 @@ async def test_wrong_structured_type_is_a_nonretryable_schema_failure() -> None:
             retries=2,
         )
     assert gateway.calls == 1
+
+
+@pytest.mark.anyio
+async def test_failed_attempts_preserve_actual_transient_then_permanent_count() -> None:
+    """Breaks if graph counters report a retry budget instead of real provider calls."""
+    gateway = _ScriptedGateway(TransientModelError(), PermanentModelError())
+
+    with pytest.raises(PermanentModelError) as raised:
+        await invoke_structured(
+            gateway,
+            phase=ModelPhase.ISSUE_UNDERSTANDING,
+            response_model=IssueUnderstanding,
+            context={},
+            retries=2,
+        )
+
+    assert raised.value.attempts == 2
+    assert gateway.calls == 2
+
+
+@pytest.mark.anyio
+async def test_zero_retry_budget_records_one_failed_attempt() -> None:
+    """Breaks if disabling graph retries still reports the default retry budget."""
+    gateway = _ScriptedGateway(TransientModelError())
+
+    with pytest.raises(TransientModelError) as raised:
+        await invoke_structured(
+            gateway,
+            phase=ModelPhase.ISSUE_UNDERSTANDING,
+            response_model=IssueUnderstanding,
+            context={},
+            retries=0,
+        )
+
+    assert raised.value.attempts == 1
+    assert gateway.calls == 1
+
+
+@pytest.mark.anyio
+async def test_openai_adapter_disables_sdk_retries_and_maps_timeout_transient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breaks if a provider timeout is retried outside the bounded graph loop."""
+    captured: dict[str, object] = {}
+
+    class _Structured:
+        async def ainvoke(self, messages):
+            raise __import__("openai").APITimeoutError(
+                httpx.Request("POST", "https://provider.example/v1")
+            )
+
+    class _ChatOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def with_structured_output(self, response_model, method):
+            return _Structured()
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", _ChatOpenAI)
+    gateway = OpenAICompatibleGateway(OpenAIModelSettings(api_key="test-key"))
+
+    with pytest.raises(TransientModelError):
+        await gateway.generate(
+            phase=ModelPhase.ISSUE_UNDERSTANDING,
+            response_model=IssueUnderstanding,
+            context={},
+        )
+
+    assert captured["max_retries"] == 0

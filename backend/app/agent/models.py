@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from math import isfinite
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.investigation.index import _normalize_relative_path
+
+
+type ToolArgumentValue = str | int | float | bool | None
 
 
 class FrozenModel(BaseModel):
@@ -49,15 +55,7 @@ def _nonblank(value: str, *, label: str, maximum: int = 10_000) -> str:
 
 def _normalized_path(value: str) -> str:
     _nonblank(value, label="path", maximum=1_000)
-    if (
-        "\\" in value
-        or "\x00" in value
-        or value.startswith("/")
-        or value.endswith("/")
-        or any(part in {"", ".", ".."} for part in value.split("/"))
-    ):
-        raise ValueError("path must be a normalized relative POSIX path")
-    return value
+    return _normalize_relative_path(value)
 
 
 class EvidenceCitation(FrozenModel):
@@ -192,10 +190,42 @@ class IssueUnderstanding(FrozenModel):
         return value
 
 
+class ToolArgument(FrozenModel):
+    key: str = Field(min_length=1, max_length=100)
+    value: ToolArgumentValue
+
+    @field_validator("key")
+    @classmethod
+    def _validate_key(cls, value: str) -> str:
+        return _nonblank(value, label="tool argument key", maximum=100)
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _validate_json_scalar(cls, value: Any) -> Any:
+        if type(value) is float and not isfinite(value):
+            raise ValueError("tool argument values must be JSON-safe")
+        if value is None or type(value) in {str, int, float, bool}:
+            return value
+        raise ValueError("tool argument values must be JSON-safe scalars")
+
+
 class ToolRequest(FrozenModel):
     tool_name: str | None = None
-    arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments: tuple[ToolArgument, ...] = Field(default_factory=tuple)
     complete: bool = False
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def _normalize_arguments(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            if not all(type(key) is str for key in value):
+                raise ValueError("tool argument keys must be strings")
+            return tuple(
+                {"key": key, "value": value[key]} for key in sorted(value)
+            )
+        if isinstance(value, (tuple, list)):
+            return value
+        raise ValueError("tool arguments must be a flat key/value collection")
 
     @model_validator(mode="after")
     def _valid_action(self) -> ToolRequest:
@@ -204,7 +234,12 @@ class ToolRequest(FrozenModel):
                 raise ValueError("completed requests cannot invoke a tool")
         elif self.tool_name is None:
             raise ValueError("a tool name is required")
+        if len({item.key for item in self.arguments}) != len(self.arguments):
+            raise ValueError("tool argument keys must be unique")
         return self
+
+    def arguments_dict(self) -> dict[str, Any]:
+        return {item.key: item.value for item in self.arguments}
 
 
 class ToolResultSummary(FrozenModel):

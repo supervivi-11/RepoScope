@@ -14,6 +14,20 @@ from .models import (
 )
 
 
+_INSUFFICIENT_EVIDENCE_SUMMARY = (
+    "Insufficient validated evidence is available to determine the root cause."
+)
+_INSUFFICIENT_EVIDENCE_OBSERVED = (
+    "The available investigation evidence is insufficient to verify observed behavior."
+)
+_INSUFFICIENT_EVIDENCE_EXPECTED = (
+    "The expected behavior cannot be verified from the available investigation evidence."
+)
+_INSUFFICIENT_EVIDENCE_UNCERTAINTY = (
+    "The root cause remains unknown because no validated primary evidence is available."
+)
+
+
 class EvidenceValidationIssue(FrozenModel):
     citation: EvidenceCitationSummary
     code: str
@@ -98,19 +112,21 @@ def downgrade_unsubstantiated_report(
     )
     filtered_alternatives = tuple(item for item in alternatives if item is not None)
     if primary is None or not primary.evidence:
-        uncertainty = "No valid evidence remains for the primary hypothesis."
-        uncertainties = _deduplicate_strings(report.uncertainties + (uncertainty,))
         return (
             report.model_copy(
                 update={
                     "outcome": "insufficient_evidence",
+                    "issue_summary": _INSUFFICIENT_EVIDENCE_SUMMARY,
+                    "observed_behavior": _INSUFFICIENT_EVIDENCE_OBSERVED,
+                    "expected_behavior": _INSUFFICIENT_EVIDENCE_EXPECTED,
                     "primary_hypothesis": None,
-                    "alternative_hypotheses": filtered_alternatives,
+                    "alternative_hypotheses": (),
                     "evidence": validation.valid,
                     "impacted_files": (),
                     "implementation_steps": (),
+                    "proposed_tests": (),
                     "confidence": min(report.confidence, 0.25),
-                    "uncertainties": uncertainties,
+                    "uncertainties": (_INSUFFICIENT_EVIDENCE_UNCERTAINTY,),
                 }
             ),
             validation,
@@ -156,7 +172,3 @@ def _citation_key(item: EvidenceCitation) -> tuple[str, str, int, int, str]:
         item.end_line,
         item.excerpt,
     )
-
-
-def _deduplicate_strings(items: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(items))

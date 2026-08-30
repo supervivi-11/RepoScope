@@ -17,6 +17,7 @@ from .models import (
     ProposedTest,
     RepositoryIdentity,
     ToolRequest,
+    ToolArgument,
     ToolResultSummary,
 )
 from .gateway import (
@@ -72,6 +73,7 @@ __all__ = [
     "ProposedTest",
     "RepositoryIdentity",
     "ToolRequest",
+    "ToolArgument",
     "ToolResultSummary",
     "TransientModelError",
     "dispatch_tool_request",

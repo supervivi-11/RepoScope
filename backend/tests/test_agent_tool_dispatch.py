@@ -7,7 +7,12 @@ import pytest
 
 from app.agent import ALLOWED_TOOL_NAMES, ToolRequest, dispatch_tool_request
 from app.ingestion import RepositorySnapshot
-from app.investigation import InvestigationTools, PythonRepositoryIndex
+from app.investigation import (
+    InvestigationTools,
+    PythonRepositoryIndex,
+    SourceExcerpt,
+    SourceLocation,
+)
 
 
 SHA = "a" * 40
@@ -125,3 +130,79 @@ async def test_tool_exception_becomes_a_generic_safe_failure(tmp_path: Path) -> 
     serialized = result.model_dump_json()
     assert "Traceback" not in serialized
     assert "snapshot" not in serialized
+
+
+@pytest.mark.anyio
+async def test_paths_use_the_task_three_normalizer_before_any_facade_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Breaks if malformed paths reach a facade or valid separators stay uncanonical."""
+    tools = _tools(tmp_path)
+    calls: list[tuple[str, object]] = []
+    original_read = tools.read_code
+
+    def record_read(path: str, start_line: int, end_line: int):
+        calls.append(("read_code", path))
+        return original_read(path, start_line, end_line)
+
+    monkeypatch.setattr(tools, "read_code", record_read)
+    for path in (
+        "C:/snapshot/src/parser.py",
+        " src/parser.py",
+        "src/parser.py ",
+        "src/\x00parser.py",
+        "./src/parser.py",
+        "../src/parser.py",
+        "/src/parser.py",
+    ):
+        result = await dispatch_tool_request(
+            tools,
+            ToolRequest(
+                tool_name="read_code",
+                arguments={"path": path, "start_line": 1, "end_line": 1},
+            ),
+        )
+        assert result.safe_error == "Invalid investigation tool arguments."
+    assert calls == []
+
+    result = await dispatch_tool_request(
+        tools,
+        ToolRequest(
+            tool_name="read_code",
+            arguments={"path": "src\\parser.py", "start_line": 1, "end_line": 1},
+        ),
+    )
+
+    assert result.succeeded is True
+    assert calls == [("read_code", "src/parser.py")]
+
+
+@pytest.mark.anyio
+async def test_extracted_citations_are_deduplicated_sorted_and_capped_before_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Breaks if a large tool result violates the persisted citation contract."""
+    tools = _tools(tmp_path)
+    excerpts = tuple(
+        SourceExcerpt(
+            location=SourceLocation(
+                path=f"src/{number:02}.py",
+                start_line=1,
+                end_line=1,
+                commit_sha=SHA,
+            ),
+            excerpt=f"line {number}\n",
+        )
+        for number in reversed(range(40))
+    )
+    monkeypatch.setattr(tools, "find_symbol", lambda symbol: excerpts)
+
+    result = await dispatch_tool_request(
+        tools, ToolRequest(tool_name="find_symbol", arguments={"symbol": "parse"})
+    )
+
+    assert result.succeeded is True
+    assert len(result.citations) == 32
+    assert [citation.path for citation in result.citations] == [
+        f"src/{number:02}.py" for number in range(32)
+    ]
