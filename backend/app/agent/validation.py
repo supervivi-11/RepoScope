@@ -121,7 +121,7 @@ def downgrade_unsubstantiated_report(
                     "expected_behavior": _INSUFFICIENT_EVIDENCE_EXPECTED,
                     "primary_hypothesis": None,
                     "alternative_hypotheses": (),
-                    "evidence": validation.valid,
+                    "evidence": (),
                     "impacted_files": (),
                     "implementation_steps": (),
                     "proposed_tests": (),

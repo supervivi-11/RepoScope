@@ -235,3 +235,50 @@ DONE
 No Task 4 blocker. `backend/tests/test_migrations.py` expects the worktree-root
 relative `backend/alembic.ini`, so full backend verification must run from the
 worktree root (where it passes), not from `backend/`.
+
+## Fix Round 2 — no-evidence secondary citation leak
+
+### Status
+
+DONE
+
+### RED/GREEN evidence
+
+- RED: `../.venv/Scripts/python.exe -m pytest tests/test_agent_graph.py -q`
+  from `backend/` produced `11 passed, 1 failed`. A report with fabricated
+  primary evidence and a structurally valid secondary citation retained the
+  secondary citation's model-authored `ROOT CAUSE`/`sk-secret` explanation
+  after being downgraded to insufficient evidence.
+- GREEN: insufficient-evidence downgrade now clears report evidence entirely,
+  in addition to the existing canonical text/hypothesis/impact/step/test
+  clearing. The graph regression serializes the complete report plus events
+  and proves neither hostile fragment remains.
+
+### Verification
+
+- Focused Task 4 suite:
+  `../.venv/Scripts/python.exe -m pytest tests/test_agent_models.py tests/test_evidence_validation.py tests/test_agent_gateway.py tests/test_agent_tool_dispatch.py tests/test_agent_graph.py -q`
+  → `41 passed in 1.74s`.
+- Full backend suite from the worktree root:
+  `./.venv/Scripts/python.exe -m pytest backend/tests -q` → `151 passed in
+  2.52s`.
+- `./.venv/Scripts/python.exe -m compileall -q backend/app` → PASS.
+- `./.venv/Scripts/python.exe -m pip check` → `No broken requirements found.`
+
+### Files changed
+
+- `backend/app/agent/validation.py`
+- `backend/tests/test_agent_graph.py`
+
+### Self-review
+
+- An insufficient-evidence report now preserves no evidence citations, so a
+  valid-but-nonprimary citation cannot retain model-authored explanations.
+- Validation events retain only `EvidenceCitationSummary`, which contains no
+  explanation text; the regression checks the serialized report and all
+  serialized events together.
+
+### Concerns
+
+No Task 4 blocker. The generated, unrelated `backend/.idea` directory remains
+untracked and excluded from this fix commit.

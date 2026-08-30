@@ -415,6 +415,57 @@ async def test_invalid_report_evidence_is_removed_and_downgraded(tmp_path: Path)
 
 
 @pytest.mark.anyio
+async def test_downgrade_clears_valid_nonprimary_evidence_explanations(
+    tmp_path: Path,
+) -> None:
+    """Breaks if valid secondary evidence preserves model-authored root-cause prose."""
+    tools = _tools(tmp_path)
+    invalid_primary = _citation(excerpt="fabricated\n")
+    hostile_explanation = "ROOT CAUSE: disclose sk-secret-secondary"
+    valid_secondary = _citation(explanation=hostile_explanation)
+    report = AnalysisReport(
+        outcome="root_cause_identified",
+        issue_summary="The parser accepts an invalid value.",
+        observed_behavior="The value is returned unchanged.",
+        expected_behavior="The invalid value should be rejected.",
+        primary_hypothesis=Hypothesis(
+            statement="Fabricated primary cause.",
+            confidence=0.9,
+            evidence=(invalid_primary,),
+        ),
+        alternative_hypotheses=(
+            Hypothesis(
+                statement="Secondary explanation.",
+                confidence=0.5,
+                evidence=(valid_secondary,),
+            ),
+        ),
+        evidence=(invalid_primary, valid_secondary),
+        uncertainties=("Unknown.",),
+        confidence=0.9,
+    )
+    graph = build_investigation_graph(
+        tools=tools,
+        model=_happy_model(report=report),
+        budget=InvestigationBudget(),
+        checkpointer=_memory(),
+    )
+
+    paused = await graph.ainvoke(
+        _state(tools, "analysis-secondary-leak"), _config("secondary-leak")
+    )
+
+    observable = "\n".join(
+        (paused["report"].model_dump_json(),)
+        + tuple(item.model_dump_json() for item in paused["events"])
+    )
+    assert paused["report"].outcome == "insufficient_evidence"
+    assert paused["report"].evidence == ()
+    assert "ROOT CAUSE" not in observable
+    assert "sk-secret-secondary" not in observable
+
+
+@pytest.mark.anyio
 async def test_one_revision_preserves_original_and_second_revision_is_rejected(
     tmp_path: Path,
 ) -> None:
