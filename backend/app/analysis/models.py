@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -40,6 +41,17 @@ STATUS_TYPE = Enum(
 
 class AnalysisJobRow(Base):
     __tablename__ = "analysis_jobs"
+    __table_args__ = (
+        CheckConstraint("issue_number > 0", name="ck_analysis_jobs_issue_positive"),
+        CheckConstraint("attempt_count >= 0", name="ck_analysis_jobs_attempt_nonnegative"),
+        CheckConstraint("revision_count >= 0", name="ck_analysis_jobs_revision_nonnegative"),
+        CheckConstraint("next_event_sequence >= 1", name="ck_analysis_jobs_event_sequence_positive"),
+        CheckConstraint("next_report_version >= 1", name="ck_analysis_jobs_report_version_positive"),
+        CheckConstraint(
+            "pending_feedback_action IS NULL OR pending_feedback_action IN ('accept', 'revise')",
+            name="ck_analysis_jobs_pending_feedback_action",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     repo_url: Mapped[str] = mapped_column(String(300), nullable=False)
@@ -61,6 +73,9 @@ class AnalysisJobRow(Base):
     )
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     revision_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pending_feedback_action: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
     next_event_sequence: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     next_report_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -79,6 +94,12 @@ class AnalysisEventRow(Base):
             "sequence",
             name="uq_analysis_events_analysis_sequence",
         ),
+        UniqueConstraint(
+            "analysis_id",
+            "dedupe_key",
+            name="uq_analysis_events_dedupe_key",
+        ),
+        CheckConstraint("sequence >= 1", name="ck_analysis_events_sequence_positive"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -90,6 +111,7 @@ class AnalysisEventRow(Base):
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    dedupe_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
     data: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -102,6 +124,10 @@ class AnalysisReportVersionRow(Base):
         UniqueConstraint(
             "analysis_id", "version", name="uq_analysis_report_versions_version"
         ),
+        UniqueConstraint(
+            "analysis_id", "result_key", name="uq_analysis_report_versions_result_key"
+        ),
+        CheckConstraint("version >= 1", name="ck_analysis_reports_version_positive"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -112,6 +138,7 @@ class AnalysisReportVersionRow(Base):
         index=True,
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
     report: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
     state: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -125,6 +152,15 @@ class AnalysisFeedbackCommandRow(Base):
         UniqueConstraint(
             "analysis_id", "fingerprint", name="uq_analysis_feedback_fingerprint"
         ),
+        CheckConstraint(
+            "action IN ('accept', 'revise')",
+            name="ck_analysis_feedback_action",
+        ),
+        CheckConstraint(
+            "(action = 'accept' AND comment IS NULL) OR "
+            "(action = 'revise' AND comment IS NOT NULL AND length(trim(comment)) > 0)",
+            name="ck_analysis_feedback_comment",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -137,6 +173,9 @@ class AnalysisFeedbackCommandRow(Base):
     action: Mapped[str] = mapped_column(String(20), nullable=False)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

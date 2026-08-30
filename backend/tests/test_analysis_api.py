@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agent import AnalysisReport
-from app.analysis import AnalysisRepository, PersistentAnalysisStatus
+from app.analysis import AnalysisRepository, PersistentAnalysisStatus, StoredEvent
 from app.analysis.failures import PublicFailure
 from app.api import SSESettings, StaticDemoStore, create_app, iter_sse_events
 from app.db import metadata
@@ -91,6 +93,66 @@ async def test_create_validates_github_input_and_idempotency_header(
 
     assert invalid_url.status_code == 422
     assert invalid_key.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_request_validation_error_never_echoes_invalid_credentials(
+    client: AsyncClient,
+) -> None:
+    """Breaks if FastAPI's validation detail reflects hostile request input."""
+    secret = "sk-a1b2"
+    response = await client.post(
+        "/api/v1/analyses",
+        json={
+            "repo_url": f"https://user:{secret}@github.com/owner/repo",
+            "issue_number": 1,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": {
+            "code": "validation_error",
+            "message": "Request validation failed.",
+        }
+    }
+    assert secret not in response.text
+    assert "user:" not in response.text
+
+
+@pytest.mark.anyio
+async def test_request_limit_counts_actual_chunked_bytes_and_ignores_false_length(
+    client: AsyncClient,
+) -> None:
+    """Breaks if body limits trust Content-Length instead of received bytes."""
+    oversized = (
+        b'{"repo_url":"https://github.com/owner/repo","issue_number":1,'
+        b'"padding":"' + (b"x" * 20_000) + b'"}'
+    )
+
+    async def chunks():
+        for offset in range(0, len(oversized), 1_000):
+            yield oversized[offset : offset + 1_000]
+
+    falsely_low = await client.post(
+        "/api/v1/analyses",
+        content=chunks(),
+        headers={"Content-Type": "application/json", "Content-Length": "1"},
+    )
+    chunked = await client.post(
+        "/api/v1/analyses",
+        content=chunks(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    for response in (falsely_low, chunked):
+        assert response.status_code == 413
+        assert response.json() == {
+            "error": {
+                "code": "request_too_large",
+                "message": "Request body is too large.",
+            }
+        }
 
 
 @pytest.mark.anyio
@@ -227,6 +289,47 @@ async def test_sse_heartbeat_and_disconnect_stop_without_holding_a_session(
     )
     with pytest.raises(StopAsyncIteration):
         await anext(disconnected)
+
+
+@pytest.mark.anyio
+async def test_sse_terminal_status_and_events_share_one_replay_snapshot() -> None:
+    """Breaks if a terminal commit can land between replay and status reads."""
+    terminal_event = StoredEvent(
+        sequence=1,
+        event_type="report_accepted",
+        data={"status": "COMPLETED"},
+        created_at=datetime(2026, 8, 30, tzinfo=UTC),
+    )
+
+    class RacingRepository:
+        async def list_events(self, analysis_id, *, after_sequence):
+            return ()
+
+        async def get_analysis(self, analysis_id):
+            return SimpleNamespace(status=PersistentAnalysisStatus.COMPLETED)
+
+        async def event_stream_snapshot(self, analysis_id, *, after_sequence):
+            return (terminal_event,), PersistentAnalysisStatus.COMPLETED
+
+    class ConnectedRequest:
+        async def is_disconnected(self):
+            return False
+
+    stream = iter_sse_events(
+        RacingRepository(),  # type: ignore[arg-type]
+        analysis_id="race",  # type: ignore[arg-type]
+        request=ConnectedRequest(),
+        after_sequence=0,
+        settings=SSESettings(poll_interval=0, heartbeat_interval=60),
+    )
+
+    assert await anext(stream) == (
+        "id: 1\n"
+        "event: report_accepted\n"
+        'data: {"status":"COMPLETED"}\n\n'
+    )
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
 
 
 @pytest.mark.anyio

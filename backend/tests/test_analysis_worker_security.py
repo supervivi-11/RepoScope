@@ -20,6 +20,7 @@ from app.analysis import AnalysisRepository, PersistentAnalysisStatus
 from app.analysis.checkpoints import CheckpointContext
 from app.analysis.failures import map_public_failure, redact_public_data
 from app.analysis.failures import PublicFailure
+from app.analysis.queue import PostgresJobQueue
 from app.analysis.worker import AnalysisWorker
 from app.db import metadata
 from app.ingestion import (
@@ -40,10 +41,20 @@ async def repository(tmp_path: Path) -> AsyncIterator[AnalysisRepository]:
 
 
 class FakeCheckpointFactory:
+    def __init__(self) -> None:
+        self._checks = 0
+
     @asynccontextmanager
     async def open(self, analysis_id):
+        factory = self
+
+        class FakeCheckpointer:
+            async def aget_tuple(self, config):
+                factory._checks += 1
+                return object() if factory._checks > 1 else None
+
         yield CheckpointContext(
-            checkpointer=object(),
+            checkpointer=FakeCheckpointer(),
             config={"configurable": {"thread_id": str(analysis_id)}},
         )
 
@@ -127,8 +138,12 @@ async def test_worker_integrates_ingestion_index_graph_and_ignores_duplicate_del
     analysis = await repository.create_analysis(
         repo_url="https://github.com/owner/repo", issue_number=1
     )
+    queue = PostgresJobQueue(repository.sessions)
+    claim = await queue.claim_next(worker_id="worker-integration")
+    assert claim is not None
     worker = AnalysisWorker(
         repository=repository,
+        queue=queue,
         ingestion=FakeIngestion(),
         index_builder=lambda item: calls.append("index") or SimpleNamespace(snapshot=item),
         tools_builder=lambda index: calls.append("tools") or SimpleNamespace(index=index),
@@ -137,8 +152,8 @@ async def test_worker_integrates_ingestion_index_graph_and_ignores_duplicate_del
         snapshot_cleaner=FakeCleaner(),
     )
 
-    first = await worker.run(analysis.analysis_id)
-    duplicate = await worker.run(analysis.analysis_id)
+    first = await worker.run(claim)
+    duplicate = await worker.run(claim)
 
     assert first.status is PersistentAnalysisStatus.REVIEW_READY
     assert duplicate.status is PersistentAnalysisStatus.REVIEW_READY
@@ -167,8 +182,12 @@ async def test_worker_maps_typed_failure_without_persisting_exception_or_secret(
     analysis = await repository.create_analysis(
         repo_url="https://github.com/owner/repo", issue_number=2
     )
+    queue = PostgresJobQueue(repository.sessions)
+    claim = await queue.claim_next(worker_id="worker-failure")
+    assert claim is not None
     worker = AnalysisWorker(
         repository=repository,
+        queue=queue,
         ingestion=FailingIngestion(),
         index_builder=lambda snapshot: None,
         tools_builder=lambda index: None,
@@ -177,7 +196,7 @@ async def test_worker_maps_typed_failure_without_persisting_exception_or_secret(
         snapshot_cleaner=SimpleNamespace(cleanup_expired=lambda snapshots: ()),
     )
 
-    failed = await worker.run(analysis.analysis_id)
+    failed = await worker.run(claim)
     events = await repository.list_events(analysis.analysis_id)
 
     assert failed.status is PersistentAnalysisStatus.FAILED
@@ -213,6 +232,27 @@ def test_failure_mapping_and_recursive_redaction_are_stable() -> None:
         "messages": "[REDACTED]",
         "url": "https://[REDACTED]@example.com/path",
         "safe": "keep me",
+    }
+
+
+def test_recursive_redaction_covers_message_variants_and_short_sk_tokens() -> None:
+    """Breaks if nested prompt/message aliases or short provider keys remain public."""
+    cleaned = redact_public_data(
+        {
+            "outer": {
+                "raw_message": "hidden",
+                "input_messages": ["hidden"],
+                "safe_text": "prefix sk-x suffix",
+            }
+        }
+    )
+
+    assert cleaned == {
+        "outer": {
+            "raw_message": "[REDACTED]",
+            "input_messages": "[REDACTED]",
+            "safe_text": "prefix [REDACTED] suffix",
+        }
     }
 
 
@@ -308,8 +348,12 @@ async def test_revision_resumes_checkpoint_and_reuses_immutable_snapshot(
     analysis = await repository.create_analysis(
         repo_url="https://github.com/owner/repo", issue_number=14
     )
+    queue = PostgresJobQueue(repository.sessions)
+    initial_claim = await queue.claim_next(worker_id="worker-original")
+    assert initial_claim is not None
     worker = AnalysisWorker(
         repository=repository,
+        queue=queue,
         ingestion=FakeIngestion(),
         index_builder=lambda item: calls.append("index") or SimpleNamespace(snapshot=item),
         tools_builder=lambda index: SimpleNamespace(index=index),
@@ -318,13 +362,15 @@ async def test_revision_resumes_checkpoint_and_reuses_immutable_snapshot(
         snapshot_cleaner=SimpleNamespace(cleanup_expired=lambda snapshots: ()),
     )
 
-    await worker.run(analysis.analysis_id)
+    await worker.run(initial_claim)
     await repository.submit_feedback(
         analysis.analysis_id,
         action="revise",
         comment="Inspect the parser branch.",
     )
-    result = await worker.run(analysis.analysis_id)
+    revision_claim = await queue.claim_next(worker_id="worker-revision")
+    assert revision_claim is not None
+    result = await worker.run(revision_claim)
 
     assert calls.count("ingest") == 1
     assert calls.count("index") == 2
@@ -334,3 +380,108 @@ async def test_revision_resumes_checkpoint_and_reuses_immutable_snapshot(
         "Parser issue",
         "Revised parser issue",
     ]
+
+
+@pytest.mark.anyio
+async def test_accept_resumes_checkpoint_and_completes_durably_once(
+    repository: AnalysisRepository, tmp_path: Path
+) -> None:
+    """Breaks if accept bypasses Task 4 or terminal state/event can be half-written."""
+    calls: list[object] = []
+    snapshot = _snapshot(tmp_path)
+    report = _report()
+
+    class FakeIngestion:
+        async def ingest(self, repo_url, issue_number):
+            return SimpleNamespace(
+                issue=GithubIssue(
+                    number=issue_number,
+                    title="Parser issue",
+                    body="Parsing fails",
+                    state="open",
+                    html_url="https://github.com/owner/repo/issues/16",
+                ),
+                snapshot=snapshot,
+            )
+
+    class AcceptingGraph:
+        state = None
+
+        async def ainvoke(self, value, *, config):
+            calls.append(value)
+            if isinstance(value, Command):
+                assert value.resume == {"action": "accept", "text": None}
+                accepted = AnalysisEvent(
+                    sequence=2,
+                    phase=AnalysisPhase.COMPLETED,
+                    status=AnalysisStatus.COMPLETED,
+                    kind="report_accepted",
+                )
+                self.state = self.state.model_copy(
+                    update={
+                        "phase": AnalysisPhase.COMPLETED,
+                        "status": AnalysisStatus.COMPLETED,
+                        "events": self.state.events + (accepted,),
+                    }
+                )
+                return self.state
+            ready = AnalysisEvent(
+                sequence=1,
+                phase=AnalysisPhase.REVIEW,
+                status=AnalysisStatus.REVIEW_READY,
+                kind="review_ready",
+            )
+            self.state = value.model_copy(
+                update={
+                    "phase": AnalysisPhase.REVIEW,
+                    "status": AnalysisStatus.REVIEW_READY,
+                    "report": report,
+                    "events": (ready,),
+                }
+            )
+            return self.state
+
+    graph = AcceptingGraph()
+    analysis = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=16
+    )
+    queue = PostgresJobQueue(repository.sessions)
+    initial_claim = await queue.claim_next(worker_id="worker-before-accept")
+    assert initial_claim is not None
+    worker = AnalysisWorker(
+        repository=repository,
+        queue=queue,
+        ingestion=FakeIngestion(),
+        index_builder=lambda item: SimpleNamespace(snapshot=item),
+        tools_builder=lambda index: SimpleNamespace(index=index),
+        graph_builder=lambda tools, checkpointer: graph,
+        checkpoint_factory=FakeCheckpointFactory(),
+        snapshot_cleaner=SimpleNamespace(cleanup_expired=lambda snapshots: ()),
+    )
+
+    await worker.run(initial_claim)
+    submitted = await repository.submit_feedback(
+        analysis.analysis_id, action="accept"
+    )
+    assert submitted.status is PersistentAnalysisStatus.REVIEW_READY
+
+    accept_claim = await queue.claim_next(worker_id="worker-accept")
+    assert accept_claim is not None
+    completed = await worker.run(accept_claim)
+    duplicate_delivery = await worker.run(accept_claim)
+    duplicate_feedback = await repository.submit_feedback(
+        analysis.analysis_id, action="accept"
+    )
+
+    assert completed.status is PersistentAnalysisStatus.COMPLETED
+    assert duplicate_delivery.status is PersistentAnalysisStatus.COMPLETED
+    assert duplicate_feedback.replayed is True
+    assert duplicate_feedback.status is PersistentAnalysisStatus.COMPLETED
+    assert completed.state["graph"]["status"] == "COMPLETED"
+    assert len(completed.report_history) == 1
+    event_types = [
+        event.event_type
+        for event in await repository.list_events(analysis.analysis_id)
+    ]
+    assert event_types.count("report_accepted") == 1
+    assert sum(isinstance(item, Command) for item in calls) == 1

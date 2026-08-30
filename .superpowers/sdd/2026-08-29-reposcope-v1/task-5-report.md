@@ -177,3 +177,112 @@ SQLite. Task 8 must run the live Compose migration/claim/checkpoint checks.
   external credentials. The committed demo artifacts are static contract
   fixtures, not fabricated benchmark results.
 - No Task 5 blocker requires user input.
+
+---
+
+## Fix round 1 — persistent workflow hardening
+
+### Status
+
+DONE on top of `c8705ba` + `8799d55`.
+
+### RED/GREEN evidence
+
+- Checkpoint setup RED: the production-factory regression observed
+  `lifecycle == ["use", "reuse"]`; `AsyncPostgresSaver.setup()` was never
+  called. GREEN: setup is awaited before the first yielded saver and guarded
+  by a factory lock/flag so later opens reuse the idempotent database setup;
+  the checkpoint file produced `5 passed` with warnings as errors.
+- Lease/recovery RED: the new worker lease suite initially produced `5 failed`
+  because queue calls had no attempt fence, repository mutations accepted no
+  lease, active stages could not restore durable input, and the worker was not
+  queue-owned. GREEN: attempt-count fencing protects heartbeat, release,
+  finish, event/report/state/failure writes; a background heartbeat prevents
+  reclaim during long graph calls; snapshot and issue metadata are persisted
+  before indexing; `INGESTING`, `INDEXING`, and `INVESTIGATING` rebuild from
+  the same snapshot; `InMemorySaver.aget_tuple()` chooses checkpoint resume
+  rather than a fresh graph input; stage events and reports have durable
+  idempotency keys. The combined queue/worker selection contains `19` tests,
+  including `6` dedicated lease/recovery cases.
+- Domain-invariant RED: runtime `action="approve"` completed an analysis and a
+  malformed feedback row committed successfully. A mutation run without the
+  queue transition guard also let `QUEUED -> COMPLETED` succeed. GREEN: service
+  validation accepts only `accept|revise`, queue finish uses the shared legal
+  transition graph, and database checks protect feedback action/comment plus
+  positive/nonnegative job/event/report invariants; the focused invariant
+  selection produced `3 passed`.
+- Accept-flow RED: submitting `accept` immediately returned `COMPLETED` without
+  invoking Task 4. GREEN: acceptance remains a durable pending command,
+  becomes claimable, resumes the same checkpoint with
+  `Command(resume={"action":"accept","text":null})`, then atomically stores
+  the accepted graph state, `report_accepted` event, processed feedback, and
+  `COMPLETED` status. Duplicate feedback/delivery creates no second event or
+  report; the focused regression produced `1 passed`.
+- SSE race RED: a terminal event committed between `list_events()` and
+  `get_analysis()` caused `StopAsyncIteration` before the event was replayed.
+  GREEN: one outer-join statement returns replay rows and job status from the
+  same database snapshot; the API file produced `9 passed` at that cycle.
+- Validation secrecy RED: FastAPI's default 422 body echoed the complete
+  credential-bearing `repo_url`, including a short `sk-` token. GREEN: a
+  dedicated `RequestValidationError` handler returns only the stable public
+  code/message; the focused regression produced `1 passed`.
+- Public-data safety RED: nested `raw_message`/`input_messages`, `sk-x`,
+  negative counters, non-JSON progress objects, oversized events, legacy event
+  JSON, and legacy error text survived validation or readback. GREEN: bounded
+  recursive JSON validation and redaction run before storage and defensively
+  on reads; counters are nonnegative integers; unsafe stored errors collapse to
+  the canonical internal failure. The two final defense regressions produced
+  `2 passed`.
+- Body-limit RED: chunked and falsely-low-`Content-Length` requests reached
+  Pydantic and returned 422. GREEN: middleware counts actual streamed bytes,
+  retains at most the configured request bound, and returns the stable 413;
+  the focused regression produced `1 passed`.
+- Event-name RED: newline, carriage-return, dash, and uppercase event types all
+  persisted. GREEN: storage, demo validation, and SSE formatting enforce
+  `^[a-z][a-z0-9_]{0,99}$`; the parameterized regression produced `4 passed`.
+
+### Fix-round verification
+
+- Focused Task 5 suite with warnings promoted to errors:
+  `./.venv/Scripts/python.exe -m pytest backend/tests/test_analysis_persistence.py backend/tests/test_analysis_queue_checkpoints.py backend/tests/test_analysis_worker_security.py backend/tests/test_analysis_worker_leases.py backend/tests/test_analysis_api.py backend/tests/test_migrations.py -q -W error`
+  → `47 passed in 3.92s`.
+- Full backend with warnings promoted to errors:
+  `./.venv/Scripts/python.exe -m pytest backend -q -W error`
+  → `197 passed in 5.05s`.
+- Compile check:
+  `./.venv/Scripts/python.exe -m compileall -q backend/app backend/tests backend/migrations`
+  → PASS (exit 0, no output).
+- Dependency integrity: `./.venv/Scripts/python.exe -m pip check`
+  → `No broken requirements found.`
+- PostgreSQL-dialect offline migration:
+  `./.venv/Scripts/python.exe -m alembic -c backend/alembic.ini upgrade head --sql`
+  → PASS, including feedback processing/pending fields, event/report
+  idempotency constraints, and all new checks.
+- `git diff --check` → PASS (exit 0; only the repository's Windows line-ending
+  notices were emitted).
+
+### Fix-round self-review
+
+- PostgreSQL checkpoint schema ownership is delegated to the checkpoint
+  library's required, idempotent `setup()`; the application does not duplicate
+  private checkpoint DDL in Alembic.
+- Every worker-originated durable mutation is fenced by analysis ID, worker ID,
+  attempt count, and unexpired lease in the same transaction as the write.
+- Terminal accept event/state/status persistence is atomic, and SSE terminal
+  replay observes a single SQL snapshot, closing both sides of the race.
+- Feedback commands are durable work: revision and acceptance are processed
+  through the checkpointed Task 4 graph and marked consumed only after durable
+  result persistence.
+- Public error/validation responses are canonical; public mappings and events
+  are bounded, recursively sanitized, and defensively sanitized on read.
+
+### Fix-round concerns
+
+- Live PostgreSQL remains NOT VERIFIED because the Docker daemon is unavailable
+  (`//./pipe/docker_engine` does not exist). No live Alembic upgrade,
+  multi-process `SKIP LOCKED` contention, or real PostgreSQL checkpoint setup
+  was attempted. These remain Task 8 environment checks; offline PostgreSQL SQL
+  generation, real async SQLite service behavior, and the production SQL/
+  checkpointer seams are verified.
+- No implementation finding was deferred and no review premise was left
+  unchanged.

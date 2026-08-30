@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -93,23 +94,24 @@ async def test_heartbeat_release_and_terminal_transition_require_lease_owner(
 
     with pytest.raises(AnalysisConflictError):
         await queue.heartbeat(
-            claimed.analysis_id, worker_id="worker-b", now=NOW + timedelta(seconds=5)
+            replace(claimed, worker_id="worker-b"),
+            now=NOW + timedelta(seconds=5),
         )
 
     heartbeat = await queue.heartbeat(
-        claimed.analysis_id, worker_id="worker-a", now=NOW + timedelta(seconds=5)
+        claimed, now=NOW + timedelta(seconds=5)
     )
     assert heartbeat.lease_expires_at == NOW + timedelta(seconds=35)
 
-    await queue.release(claimed.analysis_id, worker_id="worker-a")
+    await queue.release(heartbeat, now=NOW + timedelta(seconds=6))
     reclaimed = await queue.claim_next(
         worker_id="worker-b", now=NOW + timedelta(seconds=6)
     )
     assert reclaimed is not None
     await queue.finish(
-        reclaimed.analysis_id,
-        worker_id="worker-b",
+        reclaimed,
         status=PersistentAnalysisStatus.FAILED,
+        now=NOW + timedelta(seconds=7),
     )
     assert (await repository.get_analysis(reclaimed.analysis_id)).status is (
         PersistentAnalysisStatus.FAILED
@@ -117,6 +119,29 @@ async def test_heartbeat_release_and_terminal_transition_require_lease_owner(
     assert await queue.claim_next(
         worker_id="worker-c", now=NOW + timedelta(minutes=5)
     ) is None
+
+
+@pytest.mark.anyio
+async def test_queue_finish_rejects_illegal_domain_transition(
+    repository: AnalysisRepository,
+) -> None:
+    """Breaks if the lease queue can jump a queued job directly to completed."""
+    analysis = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=18
+    )
+    queue = PostgresJobQueue(repository.sessions)
+    claim = await queue.claim_next(worker_id="worker-transition")
+    assert claim is not None
+
+    with pytest.raises(AnalysisConflictError):
+        await queue.finish(
+            claim,
+            status=PersistentAnalysisStatus.COMPLETED,
+        )
+
+    assert (await repository.get_analysis(analysis.analysis_id)).status is (
+        PersistentAnalysisStatus.QUEUED
+    )
 
 
 def test_checkpoint_serializer_round_trips_allowlisted_task4_state_without_pickle() -> None:
@@ -147,9 +172,15 @@ def test_checkpoint_serializer_round_trips_allowlisted_task4_state_without_pickl
 async def test_postgres_checkpoint_factory_keys_thread_and_uses_safe_serializer(
     monkeypatch,
 ) -> None:
-    """Breaks if analyses share a checkpoint thread or production enables pickle."""
+    """Breaks if saver setup does not precede first use or runs more than once."""
     calls: dict[str, object] = {}
-    fake_saver = object()
+    lifecycle: list[str] = []
+
+    class FakeSaver:
+        async def setup(self) -> None:
+            lifecycle.append("setup")
+
+    fake_saver = FakeSaver()
 
     class FakeAsyncPostgresSaver:
         @classmethod
@@ -168,13 +199,18 @@ async def test_postgres_checkpoint_factory_keys_thread_and_uses_safe_serializer(
     )
 
     async with factory.open(analysis_id) as checkpoint:
+        lifecycle.append("use")
         assert checkpoint.checkpointer is fake_saver
         assert checkpoint.config == {
             "configurable": {"thread_id": str(analysis_id)}
         }
+
+    async with factory.open(uuid4()):
+        lifecycle.append("reuse")
 
     assert calls["conn_string"] == (
         "postgresql://reposcope:secret@postgres:5432/reposcope"
     )
     assert calls["pipeline"] is False
     assert calls["serde"].pickle_fallback is False
+    assert lifecycle == ["setup", "use", "reuse"]

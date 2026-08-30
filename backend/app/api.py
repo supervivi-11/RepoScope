@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import FastAPI, Header, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -25,6 +26,7 @@ from .analysis import (
     StoredEvent,
     TERMINAL_STATUSES,
 )
+from .analysis.domain import validate_event_type
 
 
 _MAX_REQUEST_BYTES = 16_384
@@ -117,7 +119,7 @@ class FeedbackResponse(ApiModel):
 
 class DemoEvent(ApiModel):
     sequence: int = Field(ge=1)
-    event_type: str
+    event_type: str = Field(pattern=r"^[a-z][a-z0-9_]{0,99}$")
     data: dict[str, Any]
 
 
@@ -184,11 +186,25 @@ def create_app(
                 return _error_response(
                     413, "request_too_large", "Request body is too large."
                 )
+        received = bytearray()
+        async for chunk in request.stream():
+            received.extend(chunk)
+            if len(received) > _MAX_REQUEST_BYTES:
+                return _error_response(
+                    413, "request_too_large", "Request body is too large."
+                )
+        request._body = bytes(received)
         return await call_next(request)
 
     @application.exception_handler(AnalysisNotFoundError)
     async def not_found_handler(request: Request, error: AnalysisNotFoundError):
         return _error_response(404, "not_found", "Analysis was not found.")
+
+    @application.exception_handler(RequestValidationError)
+    async def validation_handler(request: Request, error: RequestValidationError):
+        return _error_response(
+            422, "validation_error", "Request validation failed."
+        )
 
     @application.exception_handler(AnalysisConflictError)
     async def conflict_handler(request: Request, error: AnalysisConflictError):
@@ -322,13 +338,14 @@ async def iter_sse_events(
     while True:
         if await request.is_disconnected():
             return
-        events = await repository.list_events(analysis_id, after_sequence=cursor)
+        events, status = await repository.event_stream_snapshot(
+            analysis_id, after_sequence=cursor
+        )
         for event in events:
             cursor = event.sequence
             last_output = loop.time()
             yield _format_sse(event)
-        stored = await repository.get_analysis(analysis_id)
-        if stored.status in TERMINAL_STATUSES:
+        if status in TERMINAL_STATUSES:
             return
         await asyncio.sleep(settings.poll_interval)
         if loop.time() - last_output >= settings.heartbeat_interval:
@@ -337,10 +354,11 @@ async def iter_sse_events(
 
 
 def _format_sse(event: StoredEvent) -> str:
+    event_type = validate_event_type(event.event_type)
     data = json.dumps(event.data, sort_keys=True, separators=(",", ":"))
     return (
         f"id: {event.sequence}\n"
-        f"event: {event.event_type}\n"
+        f"event: {event_type}\n"
         f"data: {data}\n\n"
     )
 

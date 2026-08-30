@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -17,8 +18,14 @@ from langgraph.types import Command
 from app.ingestion import IngestionResult, IngestionService, RepositorySnapshot, SnapshotCleaner
 
 from .checkpoints import CheckpointFactory
-from .domain import PersistentAnalysisStatus, StoredAnalysis, TERMINAL_STATUSES
+from .domain import (
+    AnalysisConflictError,
+    PersistentAnalysisStatus,
+    StoredAnalysis,
+    TERMINAL_STATUSES,
+)
 from .failures import map_public_failure
+from .queue import ClaimedAnalysis, PostgresJobQueue
 from .repository import AnalysisRepository
 
 
@@ -33,6 +40,7 @@ class AnalysisWorker:
         self,
         *,
         repository: AnalysisRepository,
+        queue: PostgresJobQueue,
         ingestion: IngestionService,
         index_builder: Callable[[RepositorySnapshot], Any],
         tools_builder: Callable[[Any], Any],
@@ -41,6 +49,7 @@ class AnalysisWorker:
         snapshot_cleaner: SnapshotCleaner,
     ) -> None:
         self._repository = repository
+        self._queue = queue
         self._ingestion = ingestion
         self._index_builder = index_builder
         self._tools_builder = tools_builder
@@ -48,53 +57,146 @@ class AnalysisWorker:
         self._checkpoint_factory = checkpoint_factory
         self._snapshot_cleaner = snapshot_cleaner
 
-    async def run(self, analysis_id: UUID) -> StoredAnalysis:
-        stored = await self._repository.get_analysis(analysis_id)
-        if stored.status in TERMINAL_STATUSES or stored.status is (
-            PersistentAnalysisStatus.REVIEW_READY
+    async def run(self, claim: ClaimedAnalysis) -> StoredAnalysis:
+        stored = await self._repository.get_analysis(claim.analysis_id)
+        if stored.status in TERMINAL_STATUSES or (
+            stored.status is PersistentAnalysisStatus.REVIEW_READY
+            and stored.pending_feedback_action is None
         ):
             return stored
-        if stored.status is PersistentAnalysisStatus.REVISING:
-            return await self._resume_revision(stored)
+
+        active_claim = await self._queue.heartbeat(claim)
+        stop_heartbeat = asyncio.Event()
+        heartbeat = asyncio.create_task(
+            self._heartbeat_loop(active_claim, stop_heartbeat)
+        )
+        pending_error: BaseException | None = None
+        try:
+            return await self._run_claimed(stored, active_claim)
+        except BaseException as error:
+            pending_error = error
+            raise
+        finally:
+            stop_heartbeat.set()
+            try:
+                await heartbeat
+            except AnalysisConflictError:
+                if pending_error is None:
+                    raise
+            try:
+                await self._queue.release(active_claim)
+            except AnalysisConflictError:
+                pass
+
+    async def _heartbeat_loop(
+        self, claim: ClaimedAnalysis, stop: asyncio.Event
+    ) -> None:
+        while True:
+            try:
+                await asyncio.wait_for(
+                    stop.wait(), timeout=self._queue.heartbeat_interval
+                )
+            except TimeoutError:
+                await self._queue.heartbeat(claim)
+                continue
+            return
+
+    async def _run_claimed(
+        self, stored: StoredAnalysis, claim: ClaimedAnalysis
+    ) -> StoredAnalysis:
+        analysis_id = stored.analysis_id
+        if (
+            stored.status is PersistentAnalysisStatus.REVISING
+            or stored.pending_feedback_action is not None
+        ):
+            return await self._resume_feedback(stored, claim)
 
         snapshot: RepositorySnapshot | None = None
         try:
-            await self._advance(stored.status, analysis_id, PersistentAnalysisStatus.INGESTING)
-            await self._repository.append_event(
-                analysis_id, "ingestion_started", {"status": "INGESTING"}
-            )
-            ingestion = await self._ingestion.ingest(
-                stored.repo_url, stored.issue_number
-            )
-            snapshot = ingestion.snapshot
+            issue: IssueIdentity
+            if stored.status is PersistentAnalysisStatus.QUEUED:
+                await self._repository.append_event(
+                    analysis_id,
+                    "ingestion_started",
+                    {"status": "INGESTING"},
+                    lease=claim,
+                    dedupe_key="stage:ingestion",
+                )
+                ingestion = await self._ingestion.ingest(
+                    stored.repo_url, stored.issue_number
+                )
+                snapshot = ingestion.snapshot
+                issue = _issue_identity(ingestion)
+                await self._repository.transition(
+                    analysis_id,
+                    PersistentAnalysisStatus.INGESTING,
+                    state={
+                        "snapshot": _snapshot_state(snapshot),
+                        "issue": issue.model_dump(mode="json"),
+                    },
+                    lease=claim,
+                )
+                stored = await self._repository.get_analysis(analysis_id)
+            else:
+                snapshot = _restore_snapshot(stored.state)
+                issue = _restore_issue(stored.state)
 
-            current = (await self._repository.get_analysis(analysis_id)).status
-            await self._advance(current, analysis_id, PersistentAnalysisStatus.INDEXING)
-            await self._repository.append_event(
-                analysis_id, "indexing_started", {"status": "INDEXING"}
-            )
-            index = self._index_builder(snapshot)
-            tools = self._tools_builder(index)
+            if stored.status is PersistentAnalysisStatus.INGESTING:
+                await self._repository.transition(
+                    analysis_id,
+                    PersistentAnalysisStatus.INDEXING,
+                    lease=claim,
+                )
+                stored = await self._repository.get_analysis(analysis_id)
 
-            current = (await self._repository.get_analysis(analysis_id)).status
-            await self._advance(current, analysis_id, PersistentAnalysisStatus.INVESTIGATING)
+            if stored.status is PersistentAnalysisStatus.INDEXING:
+                await self._repository.append_event(
+                    analysis_id,
+                    "indexing_started",
+                    {"status": "INDEXING"},
+                    lease=claim,
+                    dedupe_key="stage:indexing",
+                )
+                index = self._index_builder(snapshot)
+                tools = self._tools_builder(index)
+                await self._repository.transition(
+                    analysis_id,
+                    PersistentAnalysisStatus.INVESTIGATING,
+                    lease=claim,
+                )
+                stored = await self._repository.get_analysis(analysis_id)
+            elif stored.status is PersistentAnalysisStatus.INVESTIGATING:
+                index = self._index_builder(snapshot)
+                tools = self._tools_builder(index)
+            else:
+                raise RuntimeError("Analysis cannot be resumed from its durable status.")
+
             await self._repository.append_event(
                 analysis_id,
                 "investigation_started",
                 {"status": "INVESTIGATING"},
+                lease=claim,
+                dedupe_key="stage:investigation",
             )
             initial_state = build_analysis_state(
                 analysis_id=str(analysis_id),
                 tools=tools,
-                issue=_issue_identity(ingestion),
+                issue=issue,
             )
             async with self._checkpoint_factory.open(analysis_id) as checkpoint:
                 graph = self._graph_builder(tools, checkpoint.checkpointer)
-                output = await graph.ainvoke(initial_state, config=checkpoint.config)
-            final_state = AnalysisState.model_validate(output)
+                graph_input = (
+                    None
+                    if await _checkpoint_has_state(
+                        checkpoint.checkpointer, checkpoint.config
+                    )
+                    else initial_state
+                )
+                output = await graph.ainvoke(graph_input, config=checkpoint.config)
+            final_state = _analysis_state(output)
 
             for event in final_state.events:
-                await self._persist_graph_event(analysis_id, event)
+                await self._persist_graph_event(analysis_id, event, claim)
             if final_state.report is None:
                 raise RuntimeError("Investigation graph returned no report.")
             await self._repository.save_report(
@@ -103,16 +205,22 @@ class AnalysisWorker:
                 state={
                     "graph": final_state.model_dump(mode="json"),
                     "snapshot": _snapshot_state(snapshot),
+                    "issue": issue.model_dump(mode="json"),
                 },
+                lease=claim,
+                result_key="initial",
             )
             target = _persistent_graph_status(final_state.status)
             await self._repository.transition(
                 analysis_id,
                 target,
                 counters=final_state.counters.model_dump(mode="json"),
+                lease=claim,
             )
             self._snapshot_cleaner.cleanup_expired((snapshot,))
             return await self._repository.get_analysis(analysis_id)
+        except AnalysisConflictError:
+            raise
         except Exception as error:
             failure = map_public_failure(error)
             if snapshot is not None:
@@ -120,47 +228,88 @@ class AnalysisWorker:
                     self._snapshot_cleaner.cleanup_expired((snapshot,))
                 except Exception:
                     pass
-            return await self._repository.fail_safe(analysis_id, failure)
+            return await self._repository.fail_safe(
+                analysis_id, failure, lease=claim
+            )
 
-    async def _resume_revision(self, stored: StoredAnalysis) -> StoredAnalysis:
+    async def _resume_feedback(
+        self, stored: StoredAnalysis, claim: ClaimedAnalysis
+    ) -> StoredAnalysis:
         analysis_id = stored.analysis_id
         snapshot: RepositorySnapshot | None = None
         try:
             snapshot = _restore_snapshot(stored.state)
             previous_state = AnalysisState.model_validate(stored.state["graph"])
             feedback = await self._repository.latest_feedback(analysis_id)
-            if feedback.action != "revise" or feedback.comment is None:
-                raise RuntimeError("Revision job has no durable revision command.")
+            if feedback.processed_at is not None:
+                raise RuntimeError("Feedback command was already processed.")
             index = self._index_builder(snapshot)
             tools = self._tools_builder(index)
             async with self._checkpoint_factory.open(analysis_id) as checkpoint:
+                if not await _checkpoint_has_state(
+                    checkpoint.checkpointer, checkpoint.config
+                ):
+                    raise RuntimeError("Revision checkpoint state is unavailable.")
                 graph = self._graph_builder(tools, checkpoint.checkpointer)
                 output = await graph.ainvoke(
                     Command(
-                        resume={"action": "revise", "text": feedback.comment}
+                        resume={"action": feedback.action, "text": feedback.comment}
                     ),
                     config=checkpoint.config,
                 )
-            final_state = AnalysisState.model_validate(output)
-            for event in final_state.events[len(previous_state.events) :]:
-                await self._persist_graph_event(analysis_id, event)
+            final_state = _analysis_state(output)
+            new_events = final_state.events[len(previous_state.events) :]
+            durable_state = {
+                "graph": final_state.model_dump(mode="json"),
+                "snapshot": _snapshot_state(snapshot),
+                "issue": _restore_issue(stored.state).model_dump(mode="json"),
+            }
+            if feedback.action == "accept":
+                if final_state.status is not AnalysisStatus.COMPLETED:
+                    raise RuntimeError("Accepted graph did not complete.")
+                result = await self._repository.complete_accept(
+                    analysis_id,
+                    state=durable_state,
+                    counters=final_state.counters.model_dump(mode="json"),
+                    events=tuple(
+                        (
+                            event.sequence,
+                            event.kind,
+                            event.model_dump(
+                                mode="json", exclude={"sequence", "kind"}
+                            ),
+                        )
+                        for event in new_events
+                    ),
+                    lease=claim,
+                )
+                self._snapshot_cleaner.cleanup_expired((snapshot,))
+                return result
+
+            if feedback.comment is None:
+                raise RuntimeError("Revision job has no durable revision comment.")
+            for event in new_events:
+                await self._persist_graph_event(analysis_id, event, claim)
             if final_state.report is None:
                 raise RuntimeError("Revised graph returned no report.")
             await self._repository.save_report(
                 analysis_id,
                 final_state.report,
-                state={
-                    "graph": final_state.model_dump(mode="json"),
-                    "snapshot": _snapshot_state(snapshot),
-                },
+                state=durable_state,
+                lease=claim,
+                result_key="revision:1",
             )
             await self._repository.transition(
                 analysis_id,
                 _persistent_graph_status(final_state.status),
                 counters=final_state.counters.model_dump(mode="json"),
+                lease=claim,
+                consume_feedback=True,
             )
             self._snapshot_cleaner.cleanup_expired((snapshot,))
             return await self._repository.get_analysis(analysis_id)
+        except AnalysisConflictError:
+            raise
         except Exception as error:
             failure = map_public_failure(error)
             if snapshot is not None:
@@ -168,29 +317,24 @@ class AnalysisWorker:
                     self._snapshot_cleaner.cleanup_expired((snapshot,))
                 except Exception:
                     pass
-            return await self._repository.fail_safe(analysis_id, failure)
+            return await self._repository.fail_safe(
+                analysis_id, failure, lease=claim
+            )
 
     async def _persist_graph_event(
-        self, analysis_id: UUID, event: AnalysisEvent
+        self,
+        analysis_id: UUID,
+        event: AnalysisEvent,
+        claim: ClaimedAnalysis,
     ) -> None:
         payload = event.model_dump(mode="json", exclude={"sequence", "kind"})
-        await self._repository.append_event(analysis_id, event.kind, payload)
-
-    async def _advance(
-        self,
-        current: PersistentAnalysisStatus,
-        analysis_id: UUID,
-        target: PersistentAnalysisStatus,
-    ) -> None:
-        order = {
-            PersistentAnalysisStatus.QUEUED: 0,
-            PersistentAnalysisStatus.INGESTING: 1,
-            PersistentAnalysisStatus.INDEXING: 2,
-            PersistentAnalysisStatus.INVESTIGATING: 3,
-        }
-        if current is target or order.get(current, 99) > order[target]:
-            return
-        await self._repository.transition(analysis_id, target)
+        await self._repository.append_event(
+            analysis_id,
+            event.kind,
+            payload,
+            lease=claim,
+            dedupe_key=f"graph:{event.sequence}",
+        )
 
 
 def _issue_identity(ingestion: IngestionResult) -> IssueIdentity:
@@ -245,3 +389,30 @@ def _restore_snapshot(state: dict[str, Any]) -> RepositorySnapshot:
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("Persisted snapshot metadata is invalid.") from exc
+
+
+def _restore_issue(state: dict[str, Any]) -> IssueIdentity:
+    try:
+        return IssueIdentity.model_validate(state["issue"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("Persisted issue metadata is invalid.") from exc
+
+
+async def _checkpoint_has_state(
+    checkpointer: Any, config: dict[str, Any]
+) -> bool:
+    getter = getattr(checkpointer, "aget_tuple", None)
+    if getter is None:
+        return False
+    return await getter(config) is not None
+
+
+def _analysis_state(output: Any) -> AnalysisState:
+    if isinstance(output, AnalysisState):
+        return output
+    if isinstance(output, Mapping):
+        fields = AnalysisState.model_fields
+        return AnalysisState.model_validate(
+            {key: value for key, value in output.items() if key in fields}
+        )
+    return AnalysisState.model_validate(output)

@@ -4,6 +4,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agent import AnalysisReport
@@ -13,6 +15,11 @@ from app.analysis import (
     PersistentAnalysisStatus,
 )
 from app.db import metadata
+from app.analysis.models import (
+    AnalysisEventRow,
+    AnalysisFeedbackCommandRow,
+    AnalysisJobRow,
+)
 
 
 @pytest.fixture
@@ -115,6 +122,25 @@ async def test_events_receive_unique_monotonic_sequences(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "event_type",
+    ["safe\nid: 999", "safe\revent: injected", "has-dash", "UPPERCASE"],
+)
+async def test_event_type_rejects_sse_header_injection_and_unsafe_grammar(
+    repository: AnalysisRepository, event_type: str
+) -> None:
+    """Breaks if stored event names can inject SSE fields or drift from stable names."""
+    analysis = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=24
+    )
+
+    with pytest.raises(ValueError):
+        await repository.append_event(analysis.analysis_id, event_type, {})
+
+    assert await repository.list_events(analysis.analysis_id) == ()
+
+
+@pytest.mark.anyio
 async def test_report_versions_preserve_original_and_revised_reports(
     repository: AnalysisRepository,
 ) -> None:
@@ -165,7 +191,9 @@ async def test_feedback_is_guarded_idempotent_and_limited_to_one_revision(
         await repository.submit_feedback(analysis.analysis_id, action="accept")
 
     await repository.transition(
-        analysis.analysis_id, PersistentAnalysisStatus.REVIEW_READY
+        analysis.analysis_id,
+        PersistentAnalysisStatus.REVIEW_READY,
+        consume_feedback=True,
     )
     with pytest.raises(AnalysisConflictError):
         await repository.submit_feedback(
@@ -176,7 +204,7 @@ async def test_feedback_is_guarded_idempotent_and_limited_to_one_revision(
     accepted_again = await repository.submit_feedback(
         analysis.analysis_id, action="accept"
     )
-    assert accepted.status is PersistentAnalysisStatus.COMPLETED
+    assert accepted.status is PersistentAnalysisStatus.REVIEW_READY
     assert accepted_again.replayed is True
 
 
@@ -194,3 +222,144 @@ async def test_feedback_rejects_blank_revision_comment(
         await repository.submit_feedback(
             analysis.analysis_id, action="revise", comment="   "
         )
+
+
+@pytest.mark.anyio
+async def test_feedback_action_is_runtime_validated_without_accept_fallback(
+    repository: AnalysisRepository,
+) -> None:
+    """Breaks if an arbitrary runtime action falls through to report acceptance."""
+    analysis = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=19
+    )
+    await _make_review_ready(repository, analysis.analysis_id)
+
+    with pytest.raises(ValueError):
+        await repository.submit_feedback(
+            analysis.analysis_id,
+            action="approve",  # type: ignore[arg-type]
+        )
+
+    assert (await repository.get_analysis(analysis.analysis_id)).status is (
+        PersistentAnalysisStatus.REVIEW_READY
+    )
+
+
+@pytest.mark.anyio
+async def test_database_rejects_feedback_action_outside_public_contract(
+    repository: AnalysisRepository,
+) -> None:
+    """Breaks if a service bug can persist a non-domain feedback action."""
+    analysis = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=20
+    )
+
+    with pytest.raises(IntegrityError):
+        async with repository.sessions.begin() as session:
+            session.add(
+                AnalysisFeedbackCommandRow(
+                    analysis_id=analysis.analysis_id,
+                    action="approve",
+                    comment=None,
+                    fingerprint="a" * 64,
+                )
+            )
+            await session.flush()
+
+
+@pytest.mark.anyio
+async def test_progress_counters_and_legacy_errors_are_sanitized_before_public_read(
+    repository: AnalysisRepository,
+) -> None:
+    """Breaks if nested operational data or old unsafe errors leak through GET."""
+    analysis = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=23
+    )
+    await repository.transition(
+        analysis.analysis_id,
+        PersistentAnalysisStatus.INGESTING,
+        progress={
+            "nested": {
+                "raw_message": "Authorization sk-x",
+                "safe": "working",
+            }
+        },
+        counters={"tool_calls": 1, "input_messages": ["sk-y"]},
+    )
+
+    with pytest.raises(ValueError):
+        await repository.transition(
+            analysis.analysis_id,
+            PersistentAnalysisStatus.INGESTING,
+            counters={"tool_calls": -1},
+        )
+    with pytest.raises(ValueError):
+        await repository.transition(
+            analysis.analysis_id,
+            PersistentAnalysisStatus.INGESTING,
+            progress={"unsafe": object()},
+        )
+
+    async with repository.sessions.begin() as session:
+        row = await session.scalar(
+            select(AnalysisJobRow).where(AnalysisJobRow.id == analysis.analysis_id)
+        )
+        assert row is not None
+        row.error_code = "hostile"
+        row.error_message = "Authorization sk-z"
+
+    stored = await repository.get_analysis(analysis.analysis_id)
+
+    assert stored.progress == {
+        "nested": {"raw_message": "[REDACTED]", "safe": "working"}
+    }
+    assert stored.counters == {
+        "tool_calls": 1,
+        "input_messages": "[REDACTED]",
+    }
+    assert (stored.error_code, stored.error_message) == (
+        "internal_error",
+        "Analysis failed safely.",
+    )
+
+
+@pytest.mark.anyio
+async def test_event_payloads_are_bounded_on_write_and_sanitized_on_read(
+    repository: AnalysisRepository,
+) -> None:
+    """Breaks if legacy event JSON or oversized observable data bypasses safety."""
+    analysis = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=25
+    )
+    event = await repository.append_event(
+        analysis.analysis_id, "safe_event", {"safe": "stored"}
+    )
+    with pytest.raises(ValueError):
+        await repository.append_event(
+            analysis.analysis_id,
+            "oversized_event",
+            {"safe": "x" * 20_000},
+        )
+
+    async with repository.sessions.begin() as session:
+        row = await session.scalar(
+            select(AnalysisEventRow).where(
+                AnalysisEventRow.analysis_id == analysis.analysis_id,
+                AnalysisEventRow.sequence == event.sequence,
+            )
+        )
+        assert row is not None
+        row.data = {
+            "nested": {
+                "input_messages": ["hidden"],
+                "token": "sk-q",
+            }
+        }
+
+    replayed = await repository.list_events(analysis.analysis_id)
+    assert replayed[0].data == {
+        "nested": {
+            "input_messages": "[REDACTED]",
+            "token": "[REDACTED]",
+        }
+    }

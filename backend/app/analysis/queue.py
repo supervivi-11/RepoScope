@@ -12,6 +12,7 @@ from .domain import (
     AnalysisNotFoundError,
     PersistentAnalysisStatus,
     TERMINAL_STATUSES,
+    validate_status_transition,
 )
 from .models import AnalysisJobRow, utc_now
 
@@ -48,6 +49,11 @@ def build_claim_statement(now: datetime):
             AnalysisJobRow.status.in_(_RECOVERABLE_STATUSES),
             lease_available,
         ),
+        and_(
+            AnalysisJobRow.status == PersistentAnalysisStatus.REVIEW_READY,
+            AnalysisJobRow.pending_feedback_action == "accept",
+            lease_available,
+        ),
     )
     return (
         select(AnalysisJobRow)
@@ -72,6 +78,10 @@ class PostgresJobQueue:
         self._sessions = sessions
         self._lease_duration = lease_duration
 
+    @property
+    def heartbeat_interval(self) -> float:
+        return max(0.1, self._lease_duration.total_seconds() / 3)
+
     async def claim_next(
         self, *, worker_id: str, now: datetime | None = None
     ) -> ClaimedAnalysis | None:
@@ -90,15 +100,14 @@ class PostgresJobQueue:
 
     async def heartbeat(
         self,
-        analysis_id: UUID,
+        claim: ClaimedAnalysis,
         *,
-        worker_id: str,
         now: datetime | None = None,
     ) -> ClaimedAnalysis:
-        _validate_worker_id(worker_id)
+        _validate_worker_id(claim.worker_id)
         timestamp = now or utc_now()
         async with self._sessions.begin() as session:
-            row = await self._owned_row(session, analysis_id, worker_id)
+            row = await self._owned_row(session, claim, now=timestamp)
             if row.status in TERMINAL_STATUSES:
                 raise AnalysisConflictError("Terminal analyses cannot be heartbeated.")
             row.lease_expires_at = timestamp + self._lease_duration
@@ -106,26 +115,31 @@ class PostgresJobQueue:
             await session.flush()
             return _claimed(row)
 
-    async def release(self, analysis_id: UUID, *, worker_id: str) -> None:
-        _validate_worker_id(worker_id)
+    async def release(
+        self, claim: ClaimedAnalysis, *, now: datetime | None = None
+    ) -> None:
+        _validate_worker_id(claim.worker_id)
+        timestamp = now or utc_now()
         async with self._sessions.begin() as session:
-            row = await self._owned_row(session, analysis_id, worker_id)
+            row = await self._owned_row(session, claim, now=timestamp)
             row.lease_worker_id = None
             row.lease_expires_at = None
             row.updated_at = utc_now()
 
     async def finish(
         self,
-        analysis_id: UUID,
+        claim: ClaimedAnalysis,
         *,
-        worker_id: str,
         status: PersistentAnalysisStatus,
+        now: datetime | None = None,
     ) -> None:
         if status not in TERMINAL_STATUSES:
             raise ValueError("queue finish requires a terminal status")
-        _validate_worker_id(worker_id)
+        _validate_worker_id(claim.worker_id)
+        timestamp = now or utc_now()
         async with self._sessions.begin() as session:
-            row = await self._owned_row(session, analysis_id, worker_id)
+            row = await self._owned_row(session, claim, now=timestamp)
+            validate_status_transition(row.status, status)
             row.status = status
             row.lease_worker_id = None
             row.lease_expires_at = None
@@ -133,17 +147,28 @@ class PostgresJobQueue:
 
     @staticmethod
     async def _owned_row(
-        session: AsyncSession, analysis_id: UUID, worker_id: str
+        session: AsyncSession,
+        claim: ClaimedAnalysis,
+        *,
+        now: datetime,
     ) -> AnalysisJobRow:
         row = await session.scalar(
             select(AnalysisJobRow)
-            .where(AnalysisJobRow.id == analysis_id)
+            .where(AnalysisJobRow.id == claim.analysis_id)
             .with_for_update()
         )
         if row is None:
             raise AnalysisNotFoundError()
-        if row.lease_worker_id != worker_id:
-            raise AnalysisConflictError("Analysis lease is owned by another worker.")
+        expires_at = row.lease_expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=now.tzinfo)
+        if (
+            row.lease_worker_id != claim.worker_id
+            or row.attempt_count != claim.attempt_count
+            or expires_at is None
+            or expires_at <= now
+        ):
+            raise AnalysisConflictError("Analysis lease is stale or owned by another worker.")
         return row
 
 

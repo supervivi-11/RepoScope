@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -18,12 +18,13 @@ from .domain import (
     AnalysisNotFoundError,
     CreateAnalysisResult,
     FeedbackResult,
-    InvalidStatusTransitionError,
     PersistentAnalysisStatus,
     StoredAnalysis,
     StoredEvent,
     StoredFeedback,
     StoredReport,
+    validate_event_type,
+    validate_status_transition,
 )
 from .models import (
     AnalysisEventRow,
@@ -32,38 +33,13 @@ from .models import (
     AnalysisReportVersionRow,
     utc_now,
 )
-from .failures import PublicFailure, canonical_public_failure, redact_public_data
-
-
-_ALLOWED_TRANSITIONS = {
-    PersistentAnalysisStatus.QUEUED: {
-        PersistentAnalysisStatus.INGESTING,
-        PersistentAnalysisStatus.FAILED,
-    },
-    PersistentAnalysisStatus.INGESTING: {
-        PersistentAnalysisStatus.INDEXING,
-        PersistentAnalysisStatus.FAILED,
-    },
-    PersistentAnalysisStatus.INDEXING: {
-        PersistentAnalysisStatus.INVESTIGATING,
-        PersistentAnalysisStatus.FAILED,
-    },
-    PersistentAnalysisStatus.INVESTIGATING: {
-        PersistentAnalysisStatus.REVIEW_READY,
-        PersistentAnalysisStatus.FAILED,
-    },
-    PersistentAnalysisStatus.REVIEW_READY: {
-        PersistentAnalysisStatus.REVISING,
-        PersistentAnalysisStatus.COMPLETED,
-        PersistentAnalysisStatus.FAILED,
-    },
-    PersistentAnalysisStatus.REVISING: {
-        PersistentAnalysisStatus.REVIEW_READY,
-        PersistentAnalysisStatus.FAILED,
-    },
-    PersistentAnalysisStatus.COMPLETED: set(),
-    PersistentAnalysisStatus.FAILED: set(),
-}
+from .failures import (
+    PublicFailure,
+    canonical_public_failure,
+    safe_public_error,
+    safe_public_mapping,
+    sanitize_public_mapping,
+)
 
 
 class AnalysisRepository:
@@ -152,55 +128,62 @@ class AnalysisRepository:
                 )
                 for item in report_rows
             )
+            error_code, error_message = safe_public_error(
+                row.error_code, row.error_message
+            )
             return StoredAnalysis(
                 analysis_id=row.id,
                 repo_url=row.repo_url,
                 issue_number=row.issue_number,
                 status=row.status,
-                progress=dict(row.progress),
-                counters=dict(row.counters),
+                progress=safe_public_mapping(row.progress),
+                counters=safe_public_mapping(row.counters, counters=True),
                 created_at=_aware(row.created_at),
                 updated_at=_aware(row.updated_at),
-                error_code=row.error_code,
-                error_message=row.error_message,
+                error_code=error_code,
+                error_message=error_message,
                 state=dict(row.state),
+                pending_feedback_action=row.pending_feedback_action,
                 report_history=reports,
             )
 
     async def append_event(
-        self, analysis_id: UUID, event_type: str, data: dict[str, Any]
+        self,
+        analysis_id: UUID,
+        event_type: str,
+        data: dict[str, Any],
+        *,
+        lease: Any | None = None,
+        dedupe_key: str | None = None,
     ) -> StoredEvent:
-        if not event_type or len(event_type) > 100:
-            raise ValueError("event type must contain 1 to 100 characters")
-        safe_data = redact_public_data(data)
-        if not isinstance(safe_data, dict):
-            raise ValueError("event data must be a JSON object")
+        event_type = validate_event_type(event_type)
+        if dedupe_key is not None and (not dedupe_key or len(dedupe_key) > 200):
+            raise ValueError("event dedupe key must contain 1 to 200 characters")
+        safe_data = sanitize_public_mapping(data)
         async with self.sessions.begin() as session:
-            next_value = await session.scalar(
-                update(AnalysisJobRow)
-                .where(AnalysisJobRow.id == analysis_id)
-                .values(
-                    next_event_sequence=AnalysisJobRow.next_event_sequence + 1,
-                    updated_at=utc_now(),
+            job = await self._get_row(session, analysis_id, for_update=True)
+            _assert_active_lease(job, lease)
+            if dedupe_key is not None:
+                existing = await session.scalar(
+                    select(AnalysisEventRow).where(
+                        AnalysisEventRow.analysis_id == analysis_id,
+                        AnalysisEventRow.dedupe_key == dedupe_key,
+                    )
                 )
-                .returning(AnalysisJobRow.next_event_sequence)
-            )
-            if next_value is None:
-                raise AnalysisNotFoundError()
+                if existing is not None:
+                    return _stored_event(existing)
             row = AnalysisEventRow(
                 analysis_id=analysis_id,
-                sequence=next_value - 1,
+                sequence=job.next_event_sequence,
                 event_type=event_type,
                 data=safe_data,
+                dedupe_key=dedupe_key,
             )
+            job.next_event_sequence += 1
+            job.updated_at = utc_now()
             session.add(row)
             await session.flush()
-            return StoredEvent(
-                sequence=row.sequence,
-                event_type=row.event_type,
-                data=dict(row.data),
-                created_at=_aware(row.created_at),
-            )
+            return _stored_event(row)
 
     async def list_events(
         self, analysis_id: UUID, *, after_sequence: int = 0
@@ -223,15 +206,36 @@ class AnalysisRepository:
                     )
                 ).all()
             )
-            return tuple(
-                StoredEvent(
-                    sequence=row.sequence,
-                    event_type=row.event_type,
-                    data=dict(row.data),
-                    created_at=_aware(row.created_at),
+            return tuple(_stored_event(row) for row in rows)
+
+    async def event_stream_snapshot(
+        self, analysis_id: UUID, *, after_sequence: int = 0
+    ) -> tuple[tuple[StoredEvent, ...], PersistentAnalysisStatus]:
+        """Read replay events and terminal status from one database snapshot."""
+        async with self.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(AnalysisJobRow.status, AnalysisEventRow)
+                    .outerjoin(
+                        AnalysisEventRow,
+                        and_(
+                            AnalysisEventRow.analysis_id == AnalysisJobRow.id,
+                            AnalysisEventRow.sequence > after_sequence,
+                        ),
+                    )
+                    .where(AnalysisJobRow.id == analysis_id)
+                    .order_by(AnalysisEventRow.sequence)
                 )
-                for row in rows
+            ).all()
+            if not rows:
+                raise AnalysisNotFoundError()
+            status = rows[0][0]
+            events = tuple(
+                _stored_event(event_row)
+                for _, event_row in rows
+                if event_row is not None
             )
+            return events, status
 
     async def save_report(
         self,
@@ -239,34 +243,36 @@ class AnalysisRepository:
         report: AnalysisReport,
         *,
         state: dict[str, Any],
+        lease: Any | None = None,
+        result_key: str | None = None,
     ) -> StoredReport:
+        if result_key is not None and (not result_key or len(result_key) > 200):
+            raise ValueError("report result key must contain 1 to 200 characters")
         async with self.sessions.begin() as session:
-            version = await session.scalar(
-                update(AnalysisJobRow)
-                .where(AnalysisJobRow.id == analysis_id)
-                .values(
-                    next_report_version=AnalysisJobRow.next_report_version + 1,
-                    state=state,
-                    updated_at=utc_now(),
+            job = await self._get_row(session, analysis_id, for_update=True)
+            _assert_active_lease(job, lease)
+            if result_key is not None:
+                existing = await session.scalar(
+                    select(AnalysisReportVersionRow).where(
+                        AnalysisReportVersionRow.analysis_id == analysis_id,
+                        AnalysisReportVersionRow.result_key == result_key,
+                    )
                 )
-                .returning(AnalysisJobRow.next_report_version)
-            )
-            if version is None:
-                raise AnalysisNotFoundError()
+                if existing is not None:
+                    return _stored_report(existing)
             row = AnalysisReportVersionRow(
                 analysis_id=analysis_id,
-                version=version - 1,
+                version=job.next_report_version,
                 report=report.model_dump(mode="json"),
                 state=state,
+                result_key=result_key,
             )
+            job.next_report_version += 1
+            job.state = state
+            job.updated_at = utc_now()
             session.add(row)
             await session.flush()
-            return StoredReport(
-                version=row.version,
-                report=report,
-                state=dict(state),
-                created_at=_aware(row.created_at),
-            )
+            return _stored_report(row)
 
     async def transition(
         self,
@@ -275,21 +281,38 @@ class AnalysisRepository:
         *,
         progress: dict[str, Any] | None = None,
         counters: dict[str, Any] | None = None,
+        state: dict[str, Any] | None = None,
+        lease: Any | None = None,
+        consume_feedback: bool = False,
     ) -> PersistentAnalysisStatus:
+        safe_progress = (
+            sanitize_public_mapping(progress) if progress is not None else None
+        )
+        safe_counters = (
+            sanitize_public_mapping(counters, counters=True)
+            if counters is not None
+            else None
+        )
         async with self.sessions.begin() as session:
             row = await self._get_row(session, analysis_id, for_update=True)
+            _assert_active_lease(row, lease)
             if status == row.status:
+                if state is not None:
+                    row.state = state
+                if consume_feedback:
+                    await _consume_pending_feedback(session, row)
                 return row.status
-            if status not in _ALLOWED_TRANSITIONS[row.status]:
-                raise InvalidStatusTransitionError(
-                    f"Cannot transition {row.status.value} to {status.value}."
-                )
+            validate_status_transition(row.status, status)
             row.status = status
             row.updated_at = utc_now()
-            if progress is not None:
-                row.progress = progress
-            if counters is not None:
-                row.counters = counters
+            if safe_progress is not None:
+                row.progress = safe_progress
+            if safe_counters is not None:
+                row.counters = safe_counters
+            if state is not None:
+                row.state = state
+            if consume_feedback:
+                await _consume_pending_feedback(session, row)
             return row.status
 
     async def submit_feedback(
@@ -299,6 +322,8 @@ class AnalysisRepository:
         action: Literal["accept", "revise"],
         comment: str | None = None,
     ) -> FeedbackResult:
+        if action not in {"accept", "revise"}:
+            raise ValueError("feedback action must be accept or revise")
         if action == "revise":
             if comment is None or not comment.strip():
                 raise ValueError("revision comment must be nonblank")
@@ -317,6 +342,8 @@ class AnalysisRepository:
                 return FeedbackResult(status=row.status, replayed=True)
             if row.status is not PersistentAnalysisStatus.REVIEW_READY:
                 raise AnalysisConflictError("Analysis is not ready for feedback.")
+            if row.pending_feedback_action is not None:
+                raise AnalysisConflictError("Another feedback command is still pending.")
             if action == "revise":
                 if row.revision_count >= 1:
                     raise AnalysisConflictError(
@@ -324,8 +351,7 @@ class AnalysisRepository:
                     )
                 row.revision_count += 1
                 row.status = PersistentAnalysisStatus.REVISING
-            else:
-                row.status = PersistentAnalysisStatus.COMPLETED
+            row.pending_feedback_action = action
             row.updated_at = utc_now()
             session.add(
                 AnalysisFeedbackCommandRow(
@@ -355,15 +381,73 @@ class AnalysisRepository:
             return StoredFeedback(
                 action=row.action,
                 comment=row.comment,
+                fingerprint=row.fingerprint,
+                processed_at=(
+                    _aware(row.processed_at) if row.processed_at is not None else None
+                ),
                 created_at=_aware(row.created_at),
             )
 
+    async def complete_accept(
+        self,
+        analysis_id: UUID,
+        *,
+        state: dict[str, Any],
+        counters: dict[str, Any],
+        events: tuple[tuple[int, str, dict[str, Any]], ...],
+        lease: Any,
+    ) -> StoredAnalysis:
+        """Atomically persist accepted graph state/events and the terminal status."""
+        safe_counters = sanitize_public_mapping(counters, counters=True)
+        async with self.sessions.begin() as session:
+            row = await self._get_row(session, analysis_id, for_update=True)
+            _assert_active_lease(row, lease)
+            if (
+                row.status is not PersistentAnalysisStatus.REVIEW_READY
+                or row.pending_feedback_action != "accept"
+            ):
+                raise AnalysisConflictError("Analysis has no pending acceptance.")
+            for source_sequence, event_type, data in events:
+                event_type = validate_event_type(event_type)
+                dedupe_key = f"graph:{source_sequence}"
+                existing = await session.scalar(
+                    select(AnalysisEventRow.id).where(
+                        AnalysisEventRow.analysis_id == analysis_id,
+                        AnalysisEventRow.dedupe_key == dedupe_key,
+                    )
+                )
+                if existing is not None:
+                    continue
+                safe_data = sanitize_public_mapping(data)
+                session.add(
+                    AnalysisEventRow(
+                        analysis_id=analysis_id,
+                        sequence=row.next_event_sequence,
+                        event_type=event_type,
+                        data=safe_data,
+                        dedupe_key=dedupe_key,
+                    )
+                )
+                row.next_event_sequence += 1
+            validate_status_transition(row.status, PersistentAnalysisStatus.COMPLETED)
+            row.status = PersistentAnalysisStatus.COMPLETED
+            row.state = state
+            row.counters = safe_counters
+            row.updated_at = utc_now()
+            await _consume_pending_feedback(session, row)
+        return await self.get_analysis(analysis_id)
+
     async def fail_safe(
-        self, analysis_id: UUID, failure: PublicFailure
+        self,
+        analysis_id: UUID,
+        failure: PublicFailure,
+        *,
+        lease: Any | None = None,
     ) -> StoredAnalysis:
         failure = canonical_public_failure(failure)
         async with self.sessions.begin() as session:
             row = await self._get_row(session, analysis_id, for_update=True)
+            _assert_active_lease(row, lease)
             if row.status is PersistentAnalysisStatus.COMPLETED:
                 raise AnalysisConflictError("Completed analyses cannot fail.")
             if row.status is not PersistentAnalysisStatus.FAILED:
@@ -407,3 +491,56 @@ def _feedback_fingerprint(action: str, comment: str | None) -> str:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _assert_active_lease(row: AnalysisJobRow, lease: Any | None) -> None:
+    if lease is None:
+        return
+    if (
+        getattr(lease, "analysis_id", None) != row.id
+        or getattr(lease, "worker_id", None) != row.lease_worker_id
+        or getattr(lease, "attempt_count", None) != row.attempt_count
+        or row.lease_expires_at is None
+        or _aware(row.lease_expires_at) <= utc_now()
+    ):
+        raise AnalysisConflictError("Analysis lease is stale or owned by another worker.")
+
+
+def _stored_event(row: AnalysisEventRow) -> StoredEvent:
+    return StoredEvent(
+        sequence=row.sequence,
+        event_type=row.event_type,
+        data=safe_public_mapping(row.data),
+        created_at=_aware(row.created_at),
+    )
+
+
+def _stored_report(row: AnalysisReportVersionRow) -> StoredReport:
+    return StoredReport(
+        version=row.version,
+        report=AnalysisReport.model_validate(row.report),
+        state=dict(row.state),
+        created_at=_aware(row.created_at),
+    )
+
+
+async def _consume_pending_feedback(
+    session: AsyncSession, row: AnalysisJobRow
+) -> None:
+    action = row.pending_feedback_action
+    if action is None:
+        raise AnalysisConflictError("Analysis has no pending feedback command.")
+    feedback = await session.scalar(
+        select(AnalysisFeedbackCommandRow)
+        .where(
+            AnalysisFeedbackCommandRow.analysis_id == row.id,
+            AnalysisFeedbackCommandRow.action == action,
+            AnalysisFeedbackCommandRow.processed_at.is_(None),
+        )
+        .order_by(AnalysisFeedbackCommandRow.id.desc())
+        .limit(1)
+    )
+    if feedback is None:
+        raise AnalysisConflictError("Pending feedback command is unavailable.")
+    feedback.processed_at = utc_now()
+    row.pending_feedback_action = None

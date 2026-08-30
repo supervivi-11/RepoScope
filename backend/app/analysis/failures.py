@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any
 
 from app.agent import (
@@ -82,7 +84,7 @@ _SENSITIVE_KEY_PARTS = (
     "prompt",
 )
 _SECRET_PATTERN = re.compile(
-    r"(?i)\b(?:sk|gh[oprsu])-[A-Za-z0-9_-]{4,}\b|\bgh[pors]_[A-Za-z0-9]{8,}\b"
+    r"(?i)\b(?:sk|gh[oprsu])-[A-Za-z0-9_-]+\b|\bgh[pors]_[A-Za-z0-9]+\b"
 )
 _CREDENTIAL_URL_PATTERN = re.compile(r"(https?://)[^\s/@:]+:[^\s/@]+@", re.I)
 _AUTHORIZATION_PATTERN = re.compile(
@@ -143,7 +145,128 @@ def redact_public_data(value: Any) -> Any:
 
 def _sensitive_key(folded: str) -> bool:
     return (
-        folded in {"message", "messages", "raw_messages"}
+        folded
+        in {
+            "message",
+            "messages",
+            "raw_message",
+            "raw_messages",
+            "input_message",
+            "input_messages",
+        }
         or folded.endswith("_token")
         or any(part in folded for part in _SENSITIVE_KEY_PARTS)
     )
+
+
+def sanitize_public_mapping(
+    value: dict[str, Any], *, counters: bool = False
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("public data must be a JSON object")
+    _validate_public_input(value, depth=0, entry_count=[0])
+    cleaned = redact_public_data(value)
+    if not isinstance(cleaned, dict):
+        raise ValueError("public data must be a JSON object")
+    entry_count = [0]
+    _validate_public_json(cleaned, depth=0, entry_count=entry_count)
+    if counters:
+        for item in cleaned.values():
+            if item == "[REDACTED]":
+                continue
+            if type(item) is not int or item < 0:
+                raise ValueError("public counters must be nonnegative integers")
+    encoded = json.dumps(cleaned, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 16_384:
+        raise ValueError("public data exceeds the storage limit")
+    return cleaned
+
+
+def safe_public_mapping(
+    value: Any, *, counters: bool = False
+) -> dict[str, Any]:
+    try:
+        return sanitize_public_mapping(value, counters=counters)
+    except (TypeError, ValueError):
+        return {}
+
+
+def safe_public_error(
+    code: str | None, message: str | None
+) -> tuple[str | None, str | None]:
+    if code is None and message is None:
+        return None, None
+    if any(item.code == code and item.message == message for item in _CANONICAL_FAILURES):
+        return code, message
+    return _INTERNAL_FAILURE.code, _INTERNAL_FAILURE.message
+
+
+def _validate_public_json(
+    value: Any, *, depth: int, entry_count: list[int]
+) -> None:
+    if depth > 8:
+        raise ValueError("public data nesting is too deep")
+    if isinstance(value, dict):
+        for key, item in value.items():
+            entry_count[0] += 1
+            if entry_count[0] > 256 or not isinstance(key, str) or len(key) > 100:
+                raise ValueError("public data contains invalid keys")
+            _validate_public_json(
+                item, depth=depth + 1, entry_count=entry_count
+            )
+        return
+    if isinstance(value, list):
+        entry_count[0] += len(value)
+        if entry_count[0] > 256:
+            raise ValueError("public data contains too many values")
+        for item in value:
+            _validate_public_json(
+                item, depth=depth + 1, entry_count=entry_count
+            )
+        return
+    if isinstance(value, str):
+        if len(value) > 4_000:
+            raise ValueError("public data text is too long")
+        return
+    if value is None or type(value) in {bool, int}:
+        return
+    if type(value) is float and isfinite(value):
+        return
+    raise ValueError("public data must contain finite JSON values")
+
+
+def _validate_public_input(
+    value: Any, *, depth: int, entry_count: list[int]
+) -> None:
+    if depth > 8:
+        raise ValueError("public data nesting is too deep")
+    if isinstance(value, dict):
+        for key, item in value.items():
+            entry_count[0] += 1
+            if entry_count[0] > 256 or not isinstance(key, str) or len(key) > 100:
+                raise ValueError("public data contains invalid keys")
+            folded = key.casefold().replace("-", "_")
+            if _sensitive_key(folded):
+                continue
+            _validate_public_input(
+                item, depth=depth + 1, entry_count=entry_count
+            )
+        return
+    if isinstance(value, (tuple, list)):
+        entry_count[0] += len(value)
+        if entry_count[0] > 256:
+            raise ValueError("public data contains too many values")
+        for item in value:
+            _validate_public_input(
+                item, depth=depth + 1, entry_count=entry_count
+            )
+        return
+    if isinstance(value, str):
+        if len(value) > 4_000:
+            raise ValueError("public data text is too long")
+        return
+    if value is None or type(value) in {bool, int}:
+        return
+    if type(value) is float and isfinite(value):
+        return
+    raise ValueError("public data must contain finite JSON values")

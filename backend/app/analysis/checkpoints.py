@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -84,6 +85,8 @@ def build_checkpoint_serializer() -> JsonPlusSerializer:
 class PostgresCheckpointFactory:
     def __init__(self, database_url: str) -> None:
         self._connection_string = _psycopg_connection_string(database_url)
+        self._setup_complete = False
+        self._setup_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def open(self, analysis_id: UUID) -> AsyncIterator[CheckpointContext]:
@@ -93,6 +96,11 @@ class PostgresCheckpointFactory:
             pipeline=False,
             serde=serializer,
         ) as saver:
+            if not self._setup_complete:
+                async with self._setup_lock:
+                    if not self._setup_complete:
+                        await saver.setup()
+                        self._setup_complete = True
             yield CheckpointContext(
                 checkpointer=saver,
                 config={"configurable": {"thread_id": str(analysis_id)}},

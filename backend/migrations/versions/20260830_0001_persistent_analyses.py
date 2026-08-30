@@ -54,10 +54,20 @@ def upgrade() -> None:
         sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("attempt_count", sa.Integer(), nullable=False),
         sa.Column("revision_count", sa.Integer(), nullable=False),
+        sa.Column("pending_feedback_action", sa.String(length=20), nullable=True),
         sa.Column("next_event_sequence", sa.Integer(), nullable=False),
         sa.Column("next_report_version", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint("attempt_count >= 0", name="ck_analysis_jobs_attempt_nonnegative"),
+        sa.CheckConstraint("issue_number > 0", name="ck_analysis_jobs_issue_positive"),
+        sa.CheckConstraint("next_event_sequence >= 1", name="ck_analysis_jobs_event_sequence_positive"),
+        sa.CheckConstraint("next_report_version >= 1", name="ck_analysis_jobs_report_version_positive"),
+        sa.CheckConstraint(
+            "pending_feedback_action IS NULL OR pending_feedback_action IN ('accept', 'revise')",
+            name="ck_analysis_jobs_pending_feedback_action",
+        ),
+        sa.CheckConstraint("revision_count >= 0", name="ck_analysis_jobs_revision_nonnegative"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("idempotency_key"),
     )
@@ -71,12 +81,17 @@ def upgrade() -> None:
         sa.Column("analysis_id", sa.Uuid(), nullable=False),
         sa.Column("sequence", sa.Integer(), nullable=False),
         sa.Column("event_type", sa.String(length=100), nullable=False),
+        sa.Column("dedupe_key", sa.String(length=200), nullable=True),
         sa.Column("data", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["analysis_id"], ["analysis_jobs.id"], ondelete="CASCADE"),
+        sa.CheckConstraint("sequence >= 1", name="ck_analysis_events_sequence_positive"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "analysis_id", "sequence", name="uq_analysis_events_analysis_sequence"
+        ),
+        sa.UniqueConstraint(
+            "analysis_id", "dedupe_key", name="uq_analysis_events_dedupe_key"
         ),
     )
     op.create_index(
@@ -87,13 +102,20 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("analysis_id", sa.Uuid(), nullable=False),
         sa.Column("version", sa.Integer(), nullable=False),
+        sa.Column("result_key", sa.String(length=200), nullable=True),
         sa.Column("report", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("state", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["analysis_id"], ["analysis_jobs.id"], ondelete="CASCADE"),
+        sa.CheckConstraint("version >= 1", name="ck_analysis_reports_version_positive"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "analysis_id", "version", name="uq_analysis_report_versions_version"
+        ),
+        sa.UniqueConstraint(
+            "analysis_id",
+            "result_key",
+            name="uq_analysis_report_versions_result_key",
         ),
     )
     op.create_index(
@@ -108,8 +130,17 @@ def upgrade() -> None:
         sa.Column("action", sa.String(length=20), nullable=False),
         sa.Column("comment", sa.Text(), nullable=True),
         sa.Column("fingerprint", sa.String(length=64), nullable=False),
+        sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["analysis_id"], ["analysis_jobs.id"], ondelete="CASCADE"),
+        sa.CheckConstraint(
+            "action IN ('accept', 'revise')", name="ck_analysis_feedback_action"
+        ),
+        sa.CheckConstraint(
+            "(action = 'accept' AND comment IS NULL) OR "
+            "(action = 'revise' AND comment IS NOT NULL AND length(trim(comment)) > 0)",
+            name="ck_analysis_feedback_comment",
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "analysis_id", "fingerprint", name="uq_analysis_feedback_fingerprint"
