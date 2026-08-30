@@ -405,6 +405,7 @@ def build_investigation_graph(
         return {"pending_feedback": feedback, "feedback_invalid": False}
 
     async def accept_report(state: AnalysisState) -> dict[str, Any]:
+        feedback = state.pending_feedback
         event = _event(
             state,
             counters=state.counters,
@@ -417,6 +418,9 @@ def build_investigation_graph(
             "status": AnalysisStatus.COMPLETED,
             "events": state.events + (event,),
             "pending_feedback": None,
+            "applied_feedback_id": (
+                feedback.command_id if feedback is not None else None
+            ),
         }
 
     async def revise_report(state: AnalysisState) -> dict[str, Any]:
@@ -487,6 +491,7 @@ def build_investigation_graph(
                 "original_report": original,
                 "report_history": history,
                 "revision_feedback": (feedback.text,),
+                "applied_feedback_id": feedback.command_id,
                 "counters": counters,
                 "events": events,
                 "pending_feedback": None,
@@ -512,6 +517,7 @@ def build_investigation_graph(
                 "original_report": original,
                 "report_history": (original,) if original is not None else (),
                 "revision_feedback": (feedback.text,),
+                "applied_feedback_id": feedback.command_id,
                 "counters": counters,
                 "safe_errors": _append_safe_error(
                     state.safe_errors, _MODEL_SAFE_ERROR

@@ -286,3 +286,118 @@ DONE on top of `c8705ba` + `8799d55`.
   checkpointer seams are verified.
 - No implementation finding was deferred and no review premise was left
   unchanged.
+
+---
+
+## Fix round 2 — checkpoint attempt fencing and lease-race hardening
+
+### Status
+
+DONE on top of `aa9fd99`.
+
+### RED/GREEN evidence
+
+- Inherited-patch baseline: the three already changed Task 4/checkpoint/lease
+  files ran unchanged first and produced `28 passed in 3.15s`. The broader
+  Task 5 + graph selection then exposed three stale test-double contracts
+  (`3 failed, 60 passed`): the doubles did not accept the new fenced
+  `attempt_count` checkpoint-factory argument. They were updated to exercise
+  the attempt-specific thread and feedback fingerprint contracts.
+- Attempt ownership RED: a misrouting saver could return a foreign tuple for
+  either the source or destination and `prepare_attempt_checkpoint()` accepted
+  it; both parameterized regressions failed. Publication RED: when pending
+  write copying failed after `aput()`, the target checkpoint remained visible
+  with no writes, so retry treated an incomplete handoff as complete. GREEN:
+  source/target tuple ownership and saver-returned destination ownership are
+  validated, one deep-copied latest prior `CheckpointTuple` is cloned through
+  public `aget_tuple` / `aput_writes` / `aput` APIs, writes publish before the
+  checkpoint becomes selectable, and retry is safe. The checkpoint file
+  produced `11 passed in 1.60s`, including real `InMemorySaver` metadata,
+  pending-interrupt, resume, failure-retry, and stale-source isolation seams.
+- Durable feedback recovery GREEN: the graph persists the SQL feedback
+  fingerprint as `applied_feedback_id`; worker commands carry that fingerprint
+  but observable events carry neither it nor the raw revision text. The real
+  LangGraph/InMemorySaver crash seam raises after the revised checkpoint is
+  committed, reclaims into a new attempt, detects the exact durable outcome,
+  consumes SQL feedback, and persists one revised report without a second
+  `Command` or `revision_rejected` event.
+- Heartbeat race RED: heartbeat loss completed the graph and only then raised,
+  leaving durable report mutations; a terminal acceptance likewise committed
+  `COMPLETED` and then surfaced `AnalysisConflictError`. GREEN: main work and
+  heartbeat now race with `FIRST_COMPLETED`; heartbeat failure cancels and
+  awaits main work before another mutation, while a conflict after a durable
+  terminal result returns that result. The existing 120 ms lease regression
+  also failed once under the focused suite because its 100 ms minimum interval
+  left only 20 ms of margin; using one-third of the configured lease passed
+  five repeated isolated runs.
+- Checkpoint bootstrap GREEN: production setup takes a PostgreSQL session
+  advisory lock, calls the checkpoint library's public `setup()`, and releases
+  the lock through the same saver connection in `finally`. Boundary tests
+  verify lock/setup/unlock SQL order and same-session release on failure; no
+  private checkpoint DDL or Alembic duplication was added.
+- Semantic redaction RED: `raw_model_message`, `provider_messages`, and camel
+  case `responseContent` retained provider output. GREEN: semantic key tokens
+  redact message/prompt/content payload aliases while preserving safe
+  `message_count` and `content_type` metadata; string-level credential and
+  secret redaction still applies recursively.
+- Body limiter RED: the bounded-buffer regression failed because no bounded
+  buffer existed and middleware appended a complete giant chunk before the
+  413 check. GREEN: only the remaining slice is retained; a 5,000,000-byte
+  chunk leaves exactly the 16,384-byte limit, and the existing streamed/
+  falsely-low-`Content-Length` endpoint regression still returns canonical
+  413 responses.
+
+### Fix-round verification
+
+- Focused Task 4 + Task 5 suite with warnings promoted to errors:
+  `./.venv/Scripts/python.exe -m pytest backend/tests/test_agent_gateway.py
+  backend/tests/test_agent_graph.py backend/tests/test_agent_models.py
+  backend/tests/test_agent_tool_dispatch.py backend/tests/test_evidence_validation.py
+  backend/tests/test_analysis_persistence.py
+  backend/tests/test_analysis_queue_checkpoints.py
+  backend/tests/test_analysis_worker_security.py
+  backend/tests/test_analysis_worker_leases.py backend/tests/test_analysis_api.py
+  backend/tests/test_migrations.py -q -W error` → `98 passed in 4.72s`.
+- Full backend with warnings promoted to errors:
+  `./.venv/Scripts/python.exe -m pytest backend -q -W error` →
+  `207 passed in 5.14s`.
+- Compile check:
+  `./.venv/Scripts/python.exe -m compileall -q backend/app backend/tests
+  backend/migrations` → PASS (exit 0, no output).
+- Dependency integrity: `./.venv/Scripts/python.exe -m pip check` →
+  `No broken requirements found.`
+- PostgreSQL-dialect offline migration:
+  `./.venv/Scripts/python.exe -m alembic -c backend/alembic.ini upgrade head
+  --sql` → PASS (exit 0), retaining application-owned tables/constraints only.
+- `git diff --check` → PASS; only Windows line-ending notices were emitted.
+
+### Fix-round self-review
+
+- Every claimed attempt uses deterministic
+  `<analysis UUID>:attempt:<attempt_count>` ownership. A handoff selects the
+  latest complete prior attempt once, deep-copies the tuple and pending writes,
+  and never consults that source again; later stale writes are isolated by the
+  destination thread ID.
+- The durable fingerprint proves which feedback command produced a checkpoint
+  outcome without comparing or emitting raw revision content.
+- Worker-originated SQL writes remain fenced by worker/attempt/lease while
+  checkpoint writes are independently fenced by attempt-specific thread
+  identity. Losing either fence stops the active work path.
+- Checkpoint schema setup remains owned entirely by
+  `langgraph-checkpoint-postgres`; the application only serializes concurrent
+  public `setup()` calls across processes.
+
+### Commit
+
+`fix: fence checkpoint recovery attempts` (hash recorded in the Task 5
+handoff).
+
+### Fix-round concerns
+
+- Live PostgreSQL remains NOT VERIFIED. Docker reported that
+  `//./pipe/docker_engine` does not exist (and its user config was unreadable),
+  so live advisory-lock contention, checkpoint setup/handoff, and migration
+  execution remain environment checks for Task 8. Offline PostgreSQL SQL,
+  public saver seams with real `InMemorySaver`, and failure/order boundaries
+  are verified.
+- No implementation-boundary review finding was deferred.

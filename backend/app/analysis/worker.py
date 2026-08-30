@@ -67,22 +67,40 @@ class AnalysisWorker:
 
         active_claim = await self._queue.heartbeat(claim)
         stop_heartbeat = asyncio.Event()
+        main_work = asyncio.create_task(self._run_claimed(stored, active_claim))
         heartbeat = asyncio.create_task(
             self._heartbeat_loop(active_claim, stop_heartbeat)
         )
-        pending_error: BaseException | None = None
         try:
-            return await self._run_claimed(stored, active_claim)
-        except BaseException as error:
-            pending_error = error
-            raise
-        finally:
+            done, _ = await asyncio.wait(
+                {main_work, heartbeat},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if heartbeat in done:
+                try:
+                    await heartbeat
+                except BaseException as heartbeat_error:
+                    await _cancel_and_await(main_work)
+                    if isinstance(heartbeat_error, AnalysisConflictError):
+                        latest = await self._repository.get_analysis(claim.analysis_id)
+                        if latest.status in TERMINAL_STATUSES:
+                            return latest
+                    raise heartbeat_error
+                await _cancel_and_await(main_work)
+                raise RuntimeError("Analysis heartbeat stopped unexpectedly.")
+
+            result = await main_work
             stop_heartbeat.set()
             try:
                 await heartbeat
             except AnalysisConflictError:
-                if pending_error is None:
+                if result.status not in TERMINAL_STATUSES:
                     raise
+            return result
+        finally:
+            stop_heartbeat.set()
+            await _cancel_and_await(main_work)
+            await _cancel_and_await(heartbeat)
             try:
                 await self._queue.release(active_claim)
             except AnalysisConflictError:
@@ -183,7 +201,10 @@ class AnalysisWorker:
                 tools=tools,
                 issue=issue,
             )
-            async with self._checkpoint_factory.open(analysis_id) as checkpoint:
+            async with self._checkpoint_factory.open(
+                analysis_id,
+                attempt_count=claim.attempt_count,
+            ) as checkpoint:
                 graph = self._graph_builder(tools, checkpoint.checkpointer)
                 graph_input = (
                     None
@@ -245,19 +266,33 @@ class AnalysisWorker:
                 raise RuntimeError("Feedback command was already processed.")
             index = self._index_builder(snapshot)
             tools = self._tools_builder(index)
-            async with self._checkpoint_factory.open(analysis_id) as checkpoint:
+            async with self._checkpoint_factory.open(
+                analysis_id,
+                attempt_count=claim.attempt_count,
+            ) as checkpoint:
                 if not await _checkpoint_has_state(
                     checkpoint.checkpointer, checkpoint.config
                 ):
                     raise RuntimeError("Revision checkpoint state is unavailable.")
                 graph = self._graph_builder(tools, checkpoint.checkpointer)
-                output = await graph.ainvoke(
-                    Command(
-                        resume={"action": feedback.action, "text": feedback.comment}
-                    ),
-                    config=checkpoint.config,
+                checkpoint_state = await _checkpoint_analysis_state(
+                    checkpoint.checkpointer,
+                    checkpoint.config,
                 )
-            final_state = _analysis_state(output)
+                if _is_applied_feedback_outcome(checkpoint_state, feedback):
+                    final_state = checkpoint_state
+                else:
+                    output = await graph.ainvoke(
+                        Command(
+                            resume={
+                                "action": feedback.action,
+                                "text": feedback.comment,
+                                "command_id": feedback.fingerprint,
+                            }
+                        ),
+                        config=checkpoint.config,
+                    )
+                    final_state = _analysis_state(output)
             new_events = final_state.events[len(previous_state.events) :]
             durable_state = {
                 "graph": final_state.model_dump(mode="json"),
@@ -405,6 +440,51 @@ async def _checkpoint_has_state(
     if getter is None:
         return False
     return await getter(config) is not None
+
+
+async def _checkpoint_analysis_state(
+    checkpointer: Any,
+    config: dict[str, Any],
+) -> AnalysisState | None:
+    getter = getattr(checkpointer, "aget_tuple", None)
+    if getter is None:
+        return None
+    checkpoint_tuple = await getter(config)
+    checkpoint = getattr(checkpoint_tuple, "checkpoint", None)
+    if not isinstance(checkpoint, Mapping):
+        return None
+    values = checkpoint.get("channel_values")
+    if not isinstance(values, Mapping):
+        return None
+    try:
+        return _analysis_state(values)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_applied_feedback_outcome(
+    state: AnalysisState | None,
+    feedback: Any,
+) -> bool:
+    if state is None or state.applied_feedback_id != feedback.fingerprint:
+        return False
+    if feedback.action == "accept":
+        return state.status is AnalysisStatus.COMPLETED
+    return (
+        feedback.action == "revise"
+        and state.status is AnalysisStatus.REVIEW_READY
+        and state.counters.user_revisions == 1
+        and state.report is not None
+    )
+
+
+async def _cancel_and_await(task: asyncio.Task[Any]) -> None:
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except BaseException:
+        pass
 
 
 def _analysis_state(output: Any) -> AnalysisState:

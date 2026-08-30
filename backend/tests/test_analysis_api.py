@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app import api as api_module
 from app.agent import AnalysisReport
 from app.analysis import AnalysisRepository, PersistentAnalysisStatus, StoredEvent
 from app.analysis.failures import PublicFailure
@@ -153,6 +154,17 @@ async def test_request_limit_counts_actual_chunked_bytes_and_ignores_false_lengt
                 "message": "Request body is too large.",
             }
         }
+
+
+def test_request_body_buffer_retains_only_the_bounded_slice_of_a_giant_chunk() -> None:
+    """Breaks if one oversized ASGI chunk is copied into retained request memory."""
+    body = api_module._BoundedBodyBuffer(limit=16_384)
+
+    accepted = body.append(b"x" * 5_000_000)
+
+    assert accepted is False
+    assert len(body.data) == 16_384
+    assert body.data == b"x" * 16_384
 
 
 @pytest.mark.anyio

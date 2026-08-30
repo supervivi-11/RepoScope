@@ -5,9 +5,13 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TypedDict
 from uuid import uuid4
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -17,6 +21,7 @@ from app.analysis import (
     AnalysisRepository,
     PersistentAnalysisStatus,
 )
+from app.analysis import checkpoints as checkpoint_module
 from app.analysis.checkpoints import (
     PostgresCheckpointFactory,
     build_checkpoint_serializer,
@@ -172,13 +177,39 @@ def test_checkpoint_serializer_round_trips_allowlisted_task4_state_without_pickl
 async def test_postgres_checkpoint_factory_keys_thread_and_uses_safe_serializer(
     monkeypatch,
 ) -> None:
-    """Breaks if saver setup does not precede first use or runs more than once."""
+    """Breaks if cross-process bootstrap is unlocked or attempts share a thread."""
     calls: dict[str, object] = {}
     lifecycle: list[str] = []
 
+    class FakeCursor:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, sql, parameters):
+            if "pg_advisory_lock" in sql:
+                lifecycle.append("lock")
+            elif "pg_advisory_unlock" in sql:
+                lifecycle.append("unlock")
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.cursor_instance = FakeCursor()
+
+        def cursor(self):
+            return self.cursor_instance
+
     class FakeSaver:
+        def __init__(self) -> None:
+            self.conn = FakeConnection()
+
         async def setup(self) -> None:
             lifecycle.append("setup")
+
+        async def aget_tuple(self, config):
+            return None
 
     fake_saver = FakeSaver()
 
@@ -198,11 +229,14 @@ async def test_postgres_checkpoint_factory_keys_thread_and_uses_safe_serializer(
         "postgresql+psycopg://reposcope:secret@postgres:5432/reposcope"
     )
 
-    async with factory.open(analysis_id) as checkpoint:
+    async with factory.open(analysis_id, attempt_count=3) as checkpoint:
         lifecycle.append("use")
         assert checkpoint.checkpointer is fake_saver
         assert checkpoint.config == {
-            "configurable": {"thread_id": str(analysis_id)}
+            "configurable": {
+                "thread_id": f"{analysis_id}:attempt:3",
+                "checkpoint_ns": "",
+            }
         }
 
     async with factory.open(uuid4()):
@@ -213,4 +247,219 @@ async def test_postgres_checkpoint_factory_keys_thread_and_uses_safe_serializer(
     )
     assert calls["pipeline"] is False
     assert calls["serde"].pickle_fallback is False
-    assert lifecycle == ["setup", "use", "reuse"]
+    assert lifecycle == ["lock", "setup", "unlock", "use", "reuse"]
+
+
+@pytest.mark.anyio
+async def test_postgres_checkpoint_setup_unlocks_same_session_when_setup_fails(
+    monkeypatch,
+) -> None:
+    """Breaks if a failed library bootstrap strands the global advisory lock."""
+    calls: list[tuple[str, int]] = []
+
+    class SetupFailure(RuntimeError):
+        pass
+
+    class FakeCursor:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, sql, parameters):
+            operation = "unlock" if "unlock" in sql else "lock"
+            calls.append((operation, id(self)))
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.cursor_instance = FakeCursor()
+
+        def cursor(self):
+            return self.cursor_instance
+
+    class FakeSaver:
+        def __init__(self) -> None:
+            self.conn = FakeConnection()
+
+        async def setup(self) -> None:
+            calls.append(("setup", id(self.conn.cursor_instance)))
+            raise SetupFailure()
+
+    @asynccontextmanager
+    async def fake_open(*args, **kwargs):
+        yield FakeSaver()
+
+    monkeypatch.setattr(
+        "app.analysis.checkpoints.AsyncPostgresSaver.from_conn_string",
+        fake_open,
+    )
+    factory = PostgresCheckpointFactory(
+        "postgresql://reposcope:secret@postgres:5432/reposcope"
+    )
+
+    with pytest.raises(SetupFailure):
+        async with factory.open(uuid4()):
+            pass
+
+    assert [operation for operation, _ in calls] == ["lock", "setup", "unlock"]
+    assert len({session_id for _, session_id in calls}) == 1
+
+
+class _HandoffState(TypedDict):
+    value: int
+    feedback: str
+
+
+@pytest.mark.anyio
+async def test_attempt_handoff_clones_checkpoint_and_pending_interrupt_once() -> None:
+    """Breaks if reclaim loses interrupt state or follows later stale writes."""
+    analysis_id = uuid4()
+    saver = InMemorySaver()
+    builder = StateGraph(_HandoffState)
+    builder.add_node("increment", lambda state: {"value": state["value"] + 1})
+
+    def pause(state):
+        return {"feedback": interrupt({"value": state["value"]})}
+
+    builder.add_node("pause", pause)
+    builder.add_node("finish", lambda state: {"value": state["value"] + 10})
+    builder.add_edge(START, "increment")
+    builder.add_edge("increment", "pause")
+    builder.add_edge("pause", "finish")
+    builder.add_edge("finish", END)
+    graph = builder.compile(checkpointer=saver)
+    source_config = {
+        "configurable": {
+            "thread_id": f"{analysis_id}:attempt:1",
+            "checkpoint_ns": "",
+        }
+    }
+    await graph.ainvoke({"value": 0, "feedback": ""}, config=source_config)
+    source = await saver.aget_tuple(source_config)
+    assert source is not None
+
+    target_config = await checkpoint_module.prepare_attempt_checkpoint(
+        saver,
+        analysis_id,
+        attempt_count=2,
+    )
+    target = await saver.aget_tuple(target_config)
+    assert target is not None
+    assert target.checkpoint == source.checkpoint
+    assert target.metadata == source.metadata
+    assert target.pending_writes == source.pending_writes
+
+    resumed = await graph.ainvoke(Command(resume="active"), config=target_config)
+    target_before_stale = await saver.aget_tuple(target_config)
+    stale = await graph.ainvoke(Command(resume="stale"), config=source_config)
+    target_after_stale = await saver.aget_tuple(target_config)
+
+    assert resumed == {"value": 11, "feedback": "active"}
+    assert stale == {"value": 11, "feedback": "stale"}
+    assert target_after_stale == target_before_stale
+
+
+@pytest.mark.anyio
+async def test_attempt_handoff_does_not_publish_checkpoint_before_pending_writes() -> None:
+    """Breaks if a write failure leaves a target that retries mistake for complete."""
+    analysis_id = uuid4()
+    saver = InMemorySaver()
+    builder = StateGraph(_HandoffState)
+
+    def pause(state):
+        return {"feedback": interrupt({"value": state["value"]})}
+
+    builder.add_node("pause", pause)
+    builder.add_edge(START, "pause")
+    builder.add_edge("pause", END)
+    graph = builder.compile(checkpointer=saver)
+    source_config = checkpoint_module.attempt_checkpoint_config(
+        analysis_id,
+        attempt_count=1,
+    )
+    target_config = checkpoint_module.attempt_checkpoint_config(
+        analysis_id,
+        attempt_count=2,
+    )
+    await graph.ainvoke({"value": 0, "feedback": ""}, config=source_config)
+    source = await saver.aget_tuple(source_config)
+    assert source is not None and source.pending_writes
+
+    class FailFirstWriteSaver:
+        failed = False
+
+        async def aget_tuple(self, config):
+            return await saver.aget_tuple(config)
+
+        async def aput(self, *args, **kwargs):
+            return await saver.aput(*args, **kwargs)
+
+        async def aput_writes(self, *args, **kwargs):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("simulated pending-write failure")
+            return await saver.aput_writes(*args, **kwargs)
+
+    flaky = FailFirstWriteSaver()
+    with pytest.raises(RuntimeError, match="pending-write failure"):
+        await checkpoint_module.prepare_attempt_checkpoint(
+            flaky,
+            analysis_id,
+            attempt_count=2,
+        )
+
+    assert await saver.aget_tuple(target_config) is None
+    await checkpoint_module.prepare_attempt_checkpoint(
+        flaky,
+        analysis_id,
+        attempt_count=2,
+    )
+    target = await saver.aget_tuple(target_config)
+    assert target is not None
+    assert target.pending_writes == source.pending_writes
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("spoof_target", [True, False])
+async def test_attempt_handoff_rejects_foreign_source_or_destination_ownership(
+    spoof_target: bool,
+) -> None:
+    """Breaks if a misrouted saver can clone or select another analysis thread."""
+    requested_id = uuid4()
+    foreign_id = uuid4()
+    saver = InMemorySaver()
+    builder = StateGraph(_HandoffState)
+    builder.add_node("finish", lambda state: {"value": state["value"] + 1})
+    builder.add_edge(START, "finish")
+    builder.add_edge("finish", END)
+    graph = builder.compile(checkpointer=saver)
+    foreign_config = {
+        "configurable": {
+            "thread_id": f"{foreign_id}:attempt:1",
+            "checkpoint_ns": "",
+        }
+    }
+    await graph.ainvoke({"value": 0, "feedback": ""}, config=foreign_config)
+    foreign = await saver.aget_tuple(foreign_config)
+    assert foreign is not None
+
+    class MisroutingSaver:
+        async def aget_tuple(self, config):
+            is_target = config["configurable"]["thread_id"].endswith(":attempt:2")
+            if is_target:
+                return foreign if spoof_target else None
+            return foreign
+
+        async def aput(self, *args, **kwargs):
+            raise AssertionError("foreign checkpoint must not be cloned")
+
+        async def aput_writes(self, *args, **kwargs):
+            raise AssertionError("foreign writes must not be cloned")
+
+    with pytest.raises(RuntimeError, match="ownership"):
+        await checkpoint_module.prepare_attempt_checkpoint(
+            MisroutingSaver(),
+            requested_id,
+            attempt_count=2,
+        )

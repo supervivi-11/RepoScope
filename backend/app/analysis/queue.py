@@ -80,7 +80,7 @@ class PostgresJobQueue:
 
     @property
     def heartbeat_interval(self) -> float:
-        return max(0.1, self._lease_duration.total_seconds() / 3)
+        return self._lease_duration.total_seconds() / 3
 
     async def claim_next(
         self, *, worker_id: str, now: datetime | None = None

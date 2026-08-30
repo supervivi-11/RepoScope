@@ -517,6 +517,47 @@ async def test_one_revision_preserves_original_and_second_revision_is_rejected(
 
 
 @pytest.mark.anyio
+async def test_revision_checkpoints_collision_resistant_feedback_identity(
+    tmp_path: Path,
+) -> None:
+    """Breaks if crash recovery can identify a revision only by its raw comment."""
+    tools = _tools(tmp_path)
+    original = _report(citation=_citation())
+    revised = _report(
+        statement="Validation and normalization are missing.",
+        citation=_citation(),
+    )
+    graph = build_investigation_graph(
+        tools=tools,
+        model=_happy_model(report=original, revision=revised),
+        budget=InvestigationBudget(),
+        checkpointer=_memory(),
+    )
+    config = _config("revision-command-id")
+    await graph.ainvoke(_state(tools, "analysis-revision-command-id"), config)
+    command_id = "b" * 64
+
+    revised_pause = await graph.ainvoke(
+        Command(
+            resume={
+                "action": "revise",
+                "text": "Inspect the normalization branch.",
+                "command_id": command_id,
+            }
+        ),
+        config,
+    )
+
+    assert revised_pause["status"] == AnalysisStatus.REVIEW_READY
+    assert revised_pause["applied_feedback_id"] == command_id
+    observable_events = "\n".join(
+        event.model_dump_json() for event in revised_pause["events"]
+    )
+    assert command_id not in observable_events
+    assert "Inspect the normalization branch." not in observable_events
+
+
+@pytest.mark.anyio
 async def test_malformed_feedback_is_rejected_without_accepting_or_revising(
     tmp_path: Path,
 ) -> None:

@@ -81,8 +81,13 @@ _SENSITIVE_KEY_PARTS = (
     "api_key",
     "password",
     "secret",
-    "prompt",
 )
+_PAYLOAD_KEY_TOKENS = frozenset(
+    {"content", "contents", "message", "messages", "prompt", "prompts"}
+)
+_SAFE_PAYLOAD_METADATA_SUFFIXES = frozenset({"count", "type"})
+_CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_KEY_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _SECRET_PATTERN = re.compile(
     r"(?i)\b(?:sk|gh[oprsu])-[A-Za-z0-9_-]+\b|\bgh[pors]_[A-Za-z0-9]+\b"
 )
@@ -126,8 +131,7 @@ def redact_public_data(value: Any) -> Any:
         cleaned: dict[str, Any] = {}
         for raw_key, item in value.items():
             key = str(raw_key)
-            folded = key.casefold().replace("-", "_")
-            if _sensitive_key(folded):
+            if _sensitive_key(key):
                 cleaned[key] = "[REDACTED]"
             else:
                 cleaned[key] = redact_public_data(item)
@@ -143,20 +147,21 @@ def redact_public_data(value: Any) -> Any:
     return "[REDACTED]"
 
 
-def _sensitive_key(folded: str) -> bool:
-    return (
-        folded
-        in {
-            "message",
-            "messages",
-            "raw_message",
-            "raw_messages",
-            "input_message",
-            "input_messages",
-        }
-        or folded.endswith("_token")
+def _sensitive_key(key: str) -> bool:
+    separated = _CAMEL_CASE_BOUNDARY.sub("_", key)
+    tokens = tuple(_KEY_TOKEN_PATTERN.findall(separated.casefold()))
+    if not tokens:
+        return False
+    folded = "_".join(tokens)
+    if (
+        folded.endswith("_token")
         or any(part in folded for part in _SENSITIVE_KEY_PARTS)
-    )
+    ):
+        return True
+    payload_tokens = _PAYLOAD_KEY_TOKENS.intersection(tokens)
+    if not payload_tokens:
+        return False
+    return tokens[-1] not in _SAFE_PAYLOAD_METADATA_SUFFIXES
 
 
 def sanitize_public_mapping(
@@ -245,8 +250,7 @@ def _validate_public_input(
             entry_count[0] += 1
             if entry_count[0] > 256 or not isinstance(key, str) or len(key) > 100:
                 raise ValueError("public data contains invalid keys")
-            folded = key.casefold().replace("-", "_")
-            if _sensitive_key(folded):
+            if _sensitive_key(key):
                 continue
             _validate_public_input(
                 item, depth=depth + 1, entry_count=entry_count

@@ -261,6 +261,7 @@ class CritiqueResult(FrozenModel):
 class FeedbackCommand(FrozenModel):
     action: Literal["accept", "revise"]
     text: str | None = None
+    command_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def _validate_feedback(self) -> FeedbackCommand:
@@ -328,6 +329,10 @@ class AnalysisState(FrozenModel):
     safe_errors: tuple[str, ...] = Field(default=(), max_length=32)
     events: tuple[AnalysisEvent, ...] = Field(default=(), max_length=256)
     revision_feedback: tuple[str, ...] = Field(default=(), max_length=1)
+    applied_feedback_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     pending_feedback: FeedbackCommand | None = None
     pending_tool_request: ToolRequest | None = None
     critique_sufficient: bool = False

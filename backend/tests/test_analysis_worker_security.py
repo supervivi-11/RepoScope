@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -16,7 +17,11 @@ from app.agent import (
     AnalysisReport,
     AnalysisStatus,
 )
-from app.analysis import AnalysisRepository, PersistentAnalysisStatus
+from app.analysis import (
+    AnalysisConflictError,
+    AnalysisRepository,
+    PersistentAnalysisStatus,
+)
 from app.analysis.checkpoints import CheckpointContext
 from app.analysis.failures import map_public_failure, redact_public_data
 from app.analysis.failures import PublicFailure
@@ -45,7 +50,7 @@ class FakeCheckpointFactory:
         self._checks = 0
 
     @asynccontextmanager
-    async def open(self, analysis_id):
+    async def open(self, analysis_id, *, attempt_count: int = 1):
         factory = self
 
         class FakeCheckpointer:
@@ -55,7 +60,12 @@ class FakeCheckpointFactory:
 
         yield CheckpointContext(
             checkpointer=FakeCheckpointer(),
-            config={"configurable": {"thread_id": str(analysis_id)}},
+            config={
+                "configurable": {
+                    "thread_id": f"{analysis_id}:attempt:{attempt_count}",
+                    "checkpoint_ns": "",
+                }
+            },
         )
 
 
@@ -256,6 +266,29 @@ def test_recursive_redaction_covers_message_variants_and_short_sk_tokens() -> No
     }
 
 
+def test_recursive_redaction_tokenizes_payload_keys_but_preserves_metadata() -> None:
+    """Breaks if provider/model payload aliases remain public or metadata is erased."""
+    cleaned = redact_public_data(
+        {
+            "raw_model_message": "hidden raw output",
+            "provider_messages": ["hidden provider output"],
+            "responseContent": "hidden response body",
+            "prompt_payload": {"text": "hidden prompt"},
+            "message_count": 2,
+            "content_type": "application/json",
+        }
+    )
+
+    assert cleaned == {
+        "raw_model_message": "[REDACTED]",
+        "provider_messages": "[REDACTED]",
+        "responseContent": "[REDACTED]",
+        "prompt_payload": "[REDACTED]",
+        "message_count": 2,
+        "content_type": "application/json",
+    }
+
+
 @pytest.mark.anyio
 async def test_safe_failure_persistence_canonicalizes_untrusted_public_failure(
     repository: AnalysisRepository,
@@ -309,10 +342,9 @@ async def test_revision_resumes_checkpoint_and_reuses_immutable_snapshot(
         async def ainvoke(self, command, *, config):
             calls.append(command)
             if isinstance(command, Command):
-                assert command.resume == {
-                    "action": "revise",
-                    "text": "Inspect the parser branch.",
-                }
+                assert command.resume["action"] == "revise"
+                assert command.resume["text"] == "Inspect the parser branch."
+                assert len(command.resume["command_id"]) == 64
                 event = AnalysisEvent(
                     sequence=2,
                     phase=AnalysisPhase.REVIEW,
@@ -410,7 +442,10 @@ async def test_accept_resumes_checkpoint_and_completes_durably_once(
         async def ainvoke(self, value, *, config):
             calls.append(value)
             if isinstance(value, Command):
-                assert value.resume == {"action": "accept", "text": None}
+                assert value.resume["action"] == "accept"
+                assert value.resume["text"] is None
+                assert len(value.resume["command_id"]) == 64
+                await terminal_heartbeat_started.wait()
                 accepted = AnalysisEvent(
                     sequence=2,
                     phase=AnalysisPhase.COMPLETED,
@@ -442,12 +477,14 @@ async def test_accept_resumes_checkpoint_and_completes_durably_once(
             return self.state
 
     graph = AcceptingGraph()
+    terminal_heartbeat_started = asyncio.Event()
     analysis = await repository.create_analysis(
         repo_url="https://github.com/owner/repo", issue_number=16
     )
     queue = PostgresJobQueue(repository.sessions)
     initial_claim = await queue.claim_next(worker_id="worker-before-accept")
     assert initial_claim is not None
+    checkpoint_factory = FakeCheckpointFactory()
     worker = AnalysisWorker(
         repository=repository,
         queue=queue,
@@ -455,7 +492,7 @@ async def test_accept_resumes_checkpoint_and_completes_durably_once(
         index_builder=lambda item: SimpleNamespace(snapshot=item),
         tools_builder=lambda index: SimpleNamespace(index=index),
         graph_builder=lambda tools, checkpointer: graph,
-        checkpoint_factory=FakeCheckpointFactory(),
+        checkpoint_factory=checkpoint_factory,
         snapshot_cleaner=SimpleNamespace(cleanup_expired=lambda snapshots: ()),
     )
 
@@ -467,8 +504,40 @@ async def test_accept_resumes_checkpoint_and_completes_durably_once(
 
     accept_claim = await queue.claim_next(worker_id="worker-accept")
     assert accept_claim is not None
-    completed = await worker.run(accept_claim)
-    duplicate_delivery = await worker.run(accept_claim)
+
+    class TerminalHeartbeatQueue:
+        heartbeat_interval = 0.001
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def heartbeat(self, active_claim):
+            self.calls += 1
+            if self.calls == 1:
+                return await queue.heartbeat(active_claim)
+            terminal_heartbeat_started.set()
+            while (
+                await repository.get_analysis(active_claim.analysis_id)
+            ).status is not PersistentAnalysisStatus.COMPLETED:
+                await asyncio.sleep(0)
+            raise AnalysisConflictError("Terminal analyses cannot be heartbeated.")
+
+        async def release(self, active_claim):
+            return await queue.release(active_claim)
+
+    terminal_worker = AnalysisWorker(
+        repository=repository,
+        queue=TerminalHeartbeatQueue(),  # type: ignore[arg-type]
+        ingestion=FakeIngestion(),
+        index_builder=lambda item: SimpleNamespace(snapshot=item),
+        tools_builder=lambda index: SimpleNamespace(index=index),
+        graph_builder=lambda tools, checkpointer: graph,
+        checkpoint_factory=checkpoint_factory,
+        snapshot_cleaner=SimpleNamespace(cleanup_expired=lambda snapshots: ()),
+    )
+    terminal_heartbeat_started.clear()
+    completed = await terminal_worker.run(accept_claim)
+    duplicate_delivery = await terminal_worker.run(accept_claim)
     duplicate_feedback = await repository.submit_feedback(
         analysis.analysis_id, action="accept"
     )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -31,6 +31,26 @@ from .analysis.domain import validate_event_type
 
 _MAX_REQUEST_BYTES = 16_384
 _IDEMPOTENCY_PATTERN = r"^[A-Za-z0-9._~:/+\-]{1,200}$"
+
+
+@dataclass(slots=True)
+class _BoundedBodyBuffer:
+    limit: int
+    _received: bytearray = field(default_factory=bytearray)
+
+    def __post_init__(self) -> None:
+        if self.limit < 0:
+            raise ValueError("request body limit cannot be negative")
+
+    def append(self, chunk: bytes) -> bool:
+        remaining = self.limit - len(self._received)
+        if remaining > 0:
+            self._received.extend(chunk[:remaining])
+        return len(chunk) <= remaining
+
+    @property
+    def data(self) -> bytes:
+        return bytes(self._received)
 
 
 class ApiModel(BaseModel):
@@ -186,14 +206,13 @@ def create_app(
                 return _error_response(
                     413, "request_too_large", "Request body is too large."
                 )
-        received = bytearray()
+        received = _BoundedBodyBuffer(_MAX_REQUEST_BYTES)
         async for chunk in request.stream():
-            received.extend(chunk)
-            if len(received) > _MAX_REQUEST_BYTES:
+            if not received.append(chunk):
                 return _error_response(
                     413, "request_too_large", "Request body is too large."
                 )
-        request._body = bytes(received)
+        request._body = received.data
         return await call_next(request)
 
     @application.exception_handler(AnalysisNotFoundError)
