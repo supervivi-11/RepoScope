@@ -1,4 +1,11 @@
 from sqlalchemy import MetaData
+from sqlalchemy.orm import DeclarativeBase
 
-# Future SQLAlchemy models register their tables on this shared metadata object.
-metadata = MetaData()
+
+class Base(DeclarativeBase):
+    """Shared declarative base used by application models and Alembic."""
+
+    metadata = MetaData()
+
+
+metadata = Base.metadata

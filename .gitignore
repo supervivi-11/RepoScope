@@ -16,4 +16,5 @@ test-results/
 *.pyo
 *.sqlite3
 .DS_Store
+**/.idea/
 
