@@ -29,7 +29,11 @@ services:
       - "8000:8000"
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_REPOSCOPE_MODE: live
+        VITE_API_BASE_URL: ""
     depends_on:
       backend:
         condition: service_healthy

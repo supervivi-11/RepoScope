@@ -1,0 +1,89 @@
+{
+  "version": "1",
+  "cases": [
+    {
+      "case_id": "parser-boundary",
+      "artifact_version": "1",
+      "title": "解析器边界 · 产品流程演练",
+      "repo_url": "https://github.com/example/parser",
+      "issue_number": 101,
+      "report": {
+        "outcome": "insufficient_evidence",
+        "issue_summary": "占位 Issue 描述：解析器拒绝一个边界输入。",
+        "observed_behavior": "预生成架构流程记录了输入被拒绝的现象。",
+        "expected_behavior": "该边界输入应被接受。",
+        "primary_hypothesis": null,
+        "alternative_hypotheses": [],
+        "evidence": [],
+        "impacted_files": [],
+        "implementation_steps": [],
+        "proposed_tests": [],
+        "uncertainties": ["这是使用 example/* 占位数据的产品流程演练，未验证真实根因。"],
+        "confidence": 0.2
+      },
+      "events": [
+        { "sequence": 1, "event_type": "analysis_queued", "data": { "status": "QUEUED" } },
+        { "sequence": 2, "event_type": "ingestion_started", "data": { "status": "INGESTING" } },
+        { "sequence": 3, "event_type": "indexing_started", "data": { "status": "INDEXING" } },
+        { "sequence": 4, "event_type": "investigation_started", "data": { "status": "INVESTIGATING" } },
+        { "sequence": 5, "event_type": "review_ready", "data": { "status": "REVIEW_READY" } }
+      ]
+    },
+    {
+      "case_id": "cache-invalidation",
+      "artifact_version": "1",
+      "title": "缓存失效 · 产品流程演练",
+      "repo_url": "https://github.com/example/cache",
+      "issue_number": 202,
+      "report": {
+        "outcome": "insufficient_evidence",
+        "issue_summary": "占位 Issue 描述：更新后仍返回缓存状态。",
+        "observed_behavior": "预生成架构流程记录了旧状态仍可见的现象。",
+        "expected_behavior": "更新后的状态应立即返回。",
+        "primary_hypothesis": null,
+        "alternative_hypotheses": [],
+        "evidence": [],
+        "impacted_files": [],
+        "implementation_steps": [],
+        "proposed_tests": [],
+        "uncertainties": ["这是使用 example/* 占位数据的产品流程演练，未验证真实根因。"],
+        "confidence": 0.2
+      },
+      "events": [
+        { "sequence": 1, "event_type": "analysis_queued", "data": { "status": "QUEUED" } },
+        { "sequence": 2, "event_type": "ingestion_started", "data": { "status": "INGESTING" } },
+        { "sequence": 3, "event_type": "indexing_started", "data": { "status": "INDEXING" } },
+        { "sequence": 4, "event_type": "investigation_started", "data": { "status": "INVESTIGATING" } },
+        { "sequence": 5, "event_type": "review_ready", "data": { "status": "REVIEW_READY" } }
+      ]
+    },
+    {
+      "case_id": "async-cleanup",
+      "artifact_version": "1",
+      "title": "异步清理 · 产品流程演练",
+      "repo_url": "https://github.com/example/async-tools",
+      "issue_number": 303,
+      "report": {
+        "outcome": "insufficient_evidence",
+        "issue_summary": "占位 Issue 描述：取消任务后异步资源未释放。",
+        "observed_behavior": "预生成架构流程记录了清理失败的现象。",
+        "expected_behavior": "取消操作应释放当前任务拥有的资源。",
+        "primary_hypothesis": null,
+        "alternative_hypotheses": [],
+        "evidence": [],
+        "impacted_files": [],
+        "implementation_steps": [],
+        "proposed_tests": [],
+        "uncertainties": ["这是使用 example/* 占位数据的产品流程演练，未验证真实根因。"],
+        "confidence": 0.2
+      },
+      "events": [
+        { "sequence": 1, "event_type": "analysis_queued", "data": { "status": "QUEUED" } },
+        { "sequence": 2, "event_type": "ingestion_started", "data": { "status": "INGESTING" } },
+        { "sequence": 3, "event_type": "indexing_started", "data": { "status": "INDEXING" } },
+        { "sequence": 4, "event_type": "investigation_started", "data": { "status": "INVESTIGATING" } },
+        { "sequence": 5, "event_type": "review_ready", "data": { "status": "REVIEW_READY" } }
+      ]
+    }
+  ]
+}
