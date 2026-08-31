@@ -32,13 +32,13 @@ function AppContent({ apiClient, streamFetch, demoIntervalMs, mode }: Required<A
         <nav aria-label="主导航"><a href="#">新调查</a><a href="#demo/parser-boundary">演示</a></nav>
       </header>
       {route.kind === "home" && <Landing apiClient={apiClient} liveEnabled={mode === "live"} />}
-      {route.kind === "analysis" && mode === "live" && <LiveWorkspace analysisId={route.analysisId} apiClient={apiClient} streamFetch={streamFetch} />}
+      {route.kind === "analysis" && mode === "live" && <LiveWorkspace key={route.analysisId} analysisId={route.analysisId} apiClient={apiClient} streamFetch={streamFetch} />}
       {route.kind === "analysis" && mode === "static" && (
         <main id="main-content" tabIndex={-1} className="page-shell workspace-page">
           <section className="panel error-panel"><p className="eyebrow">STATIC DEMO MODE</p><h1>本地实时分析未启用</h1><p>这个公开构建仅回放包内的预生成演示，不会连接后端、GitHub 或模型。</p><a className="button button-secondary" href="#">查看演示入口</a></section>
         </main>
       )}
-      {route.kind === "demo" && <DemoWorkspace caseId={route.caseId} intervalMs={demoIntervalMs} />}
+      {route.kind === "demo" && <DemoWorkspace key={route.caseId} caseId={route.caseId} intervalMs={demoIntervalMs} />}
       {route.kind === "not-found" && (
         <main id="main-content" tabIndex={-1} className="page-shell workspace-page">
           <section className="panel error-panel"><p className="eyebrow">ROUTE NOT FOUND</p><h1>页面不存在</h1><p>这个静态地址无法识别。</p><a className="button button-secondary" href="#">返回首页</a></section>

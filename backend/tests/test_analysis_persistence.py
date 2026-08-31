@@ -20,6 +20,7 @@ from app.analysis.models import (
     AnalysisFeedbackCommandRow,
     AnalysisJobRow,
 )
+from app.analysis.failures import PublicFailure
 
 
 @pytest.fixture
@@ -164,6 +165,78 @@ async def test_report_versions_preserve_original_and_revised_reports(
     ]
     assert stored.current_report == _report("Revised")
     assert stored.state == {"phase": "revising"}
+
+
+@pytest.mark.anyio
+async def test_publish_review_result_atomically_exposes_report_events_and_status(
+    repository: AnalysisRepository,
+) -> None:
+    analysis = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=202
+    )
+    for status in (
+        PersistentAnalysisStatus.INGESTING,
+        PersistentAnalysisStatus.INDEXING,
+        PersistentAnalysisStatus.INVESTIGATING,
+    ):
+        await repository.transition(analysis.analysis_id, status)
+
+    published = await repository.publish_review_result(
+        analysis.analysis_id,
+        report=_report("Atomic report"),
+        state={"graph": {"status": "REVIEW_READY"}},
+        counters={"tool_calls": 2},
+        events=((1, "review_ready", {"status": "REVIEW_READY"}),),
+        result_key="initial",
+    )
+    replayed = await repository.publish_review_result(
+        analysis.analysis_id,
+        report=_report("Atomic report"),
+        state={"graph": {"status": "REVIEW_READY"}},
+        counters={"tool_calls": 2},
+        events=((1, "review_ready", {"status": "REVIEW_READY"}),),
+        result_key="initial",
+    )
+
+    assert published.status is PersistentAnalysisStatus.REVIEW_READY
+    assert published.current_report == _report("Atomic report")
+    assert published.counters == {"tool_calls": 2}
+    assert [
+        event.event_type
+        for event in await repository.list_events(analysis.analysis_id)
+    ] == ["review_ready"]
+    assert len(replayed.report_history) == 1
+    assert len(await repository.list_events(analysis.analysis_id)) == 1
+
+
+@pytest.mark.anyio
+async def test_active_snapshot_paths_excludes_terminal_jobs(
+    repository: AnalysisRepository, tmp_path: Path
+) -> None:
+    active = await repository.create_analysis(
+        repo_url="https://github.com/owner/active", issue_number=1
+    )
+    terminal = await repository.create_analysis(
+        repo_url="https://github.com/owner/terminal", issue_number=2
+    )
+    active_path = tmp_path / "active"
+    terminal_path = tmp_path / "terminal"
+    await repository.transition(
+        active.analysis_id,
+        PersistentAnalysisStatus.INGESTING,
+        state={"snapshot": {"root_path": str(active_path)}},
+    )
+    await repository.fail_safe(
+        terminal.analysis_id,
+        PublicFailure("analysis_failed", "Analysis failed safely.", 500),
+    )
+    await repository.transition(
+        terminal.analysis_id,
+        PersistentAnalysisStatus.FAILED,
+        state={"snapshot": {"root_path": str(terminal_path)}},
+    )
+
+    assert await repository.active_snapshot_paths() == {active_path.resolve()}
 
 
 @pytest.mark.anyio

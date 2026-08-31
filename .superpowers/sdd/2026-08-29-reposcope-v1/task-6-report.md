@@ -6,6 +6,39 @@ Implemented the Chinese-first RepoScope investigation workspace, the typed live 
 
 Delivery commit: `feat: add investigation workspace and demos` (this report is included in that commit).
 
+### Review-fix round — live runtime hardening
+
+Took over the interrupted production-runtime review-fix diff without reverting prior worker changes. The inherited implementation adds the backend runtime composition root, worker service/CLI, schema-aware readiness probe, snapshot janitor, atomic review publishing, blocking-work offload, Compose migration/API/worker split, Alembic image assets, frontend live dev proxy, GET-authoritative SSE behavior, static/live build isolation, route-key normalization, and bounded public JSON/event handling.
+
+Additional TDD fix in this takeover:
+
+- RED: `npm test -- --reporter=dot src/App.test.tsx` failed with the new neutral letter-spacing regression, showing `-0.025em`, `0.08em`, `0.14em`, and `0.06em`.
+- GREEN: set the four interface `letter-spacing` declarations to `0`; the focused App suite then reported 10 passed.
+
+Fresh focused baseline for the inherited runtime diff:
+
+- `.\.venv\Scripts\python.exe -m pytest -W error -q backend\tests\test_runtime_service.py backend\tests\test_analysis_persistence.py backend\tests\test_agent_tool_dispatch.py backend\tests\test_health.py backend\tests\test_analysis_worker_leases.py backend\tests\test_analysis_worker_security.py backend\tests\test_ingestion_service.py backend\tests\test_investigation_tools.py`: 54 passed.
+- `npm test -- --reporter=dot src/api/sse.test.ts src/views/LiveWorkspace.test.tsx`: 14 passed.
+
+Fresh review-fix verification:
+
+- `npm test -- --reporter=dot`: 60 passed, 11 files.
+- `npm run typecheck`: PASS.
+- `npm run test:build-config`: PASS, `build configuration isolation verified`.
+- `npm run build`: PASS, production static build, 77 modules, JS 274.24 kB / 84.06 kB gzip, CSS 18.25 kB / 4.74 kB gzip.
+- `npm run build:live`: PASS, explicit live build, 77 modules, JS 274.24 kB / 84.06 kB gzip, CSS 18.25 kB / 4.74 kB gzip.
+- Production bundle scan: PASS for local absolute paths, unexpanded Vite variables, and known test secret markers.
+- `npx playwright test --list`: PASS, four Chromium specs listed.
+- `npx playwright test`: NOT VERIFIED because Chromium is not installed locally; every spec failed at browser launch with missing `C:\Users\1\AppData\Local\ms-playwright\chromium_headless_shell-1234\chrome-headless-shell-win64\chrome-headless-shell.exe`. The wrapper was interrupted after recording the launch failures because teardown did not exit promptly.
+- `.\.venv\Scripts\python.exe -m pytest -W error -q backend\tests`: 214 passed.
+- `.\.venv\Scripts\python.exe -m compileall -q backend\app backend\tests`: PASS.
+- `.\.venv\Scripts\python.exe -m pip check`: PASS, no broken requirements.
+- `..\.venv\Scripts\python.exe -m alembic upgrade head --sql` from `backend`: PASS, generated PostgreSQL DDL ending at `20260830_0001`.
+- `docker compose config --quiet` with isolated `DOCKER_CONFIG`: PASS.
+- `docker version --format '{{.Server.Version}}'` with isolated `DOCKER_CONFIG`: NOT VERIFIED because the daemon pipe `//./pipe/docker_engine` does not exist.
+
+Generated verification artifacts `frontend/dist`, `frontend/test-results`, and `frontend/playwright-report` were removed after the scan. `node_modules` remains ignored and was not modified as a deliverable.
+
 ### TDD evidence
 
 - Baseline RED: `npm test -- --reporter=dot` collected `e2e/workspace.spec.ts` as Vitest and failed while the existing 26 unit tests passed.

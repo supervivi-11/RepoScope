@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, AsyncContextManager, Literal
 from uuid import UUID
 
 from fastapi import FastAPI, Header, Request
@@ -189,8 +189,9 @@ def create_app(
     demo_store: StaticDemoStore | None = None,
     database_probe: Callable[[], Awaitable[bool]] = _database_unconfigured,
     sse_settings: SSESettings | None = None,
+    lifespan: Callable[[FastAPI], AsyncContextManager[None]] | None = None,
 ) -> FastAPI:
-    application = FastAPI(title="RepoScope API")
+    application = FastAPI(title="RepoScope API", lifespan=lifespan)
     demos = demo_store or StaticDemoStore()
     stream_settings = sse_settings or SSESettings()
 

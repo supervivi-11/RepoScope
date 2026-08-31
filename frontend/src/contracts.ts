@@ -188,7 +188,7 @@ function redactPublicText(value: string): string {
     .replace(/\bBearer\s+[^\s,;]+/gi, "[已隐藏凭据]")
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[已隐藏凭据]")
     .replace(/\bgh[pousr]_[A-Za-z0-9]{12,}\b/gi, "[已隐藏凭据]")
-    .replace(/\b(api[_-]?key|token|password|secret)\s*[:=]\s*[^\s,;]+/gi, "$1=[已隐藏凭据]")
+    .replace(/\b[A-Za-z0-9_]*(?:api[_-]?key|token|password|secret)\s*[:=]\s*[^\s,;]+/gi, "[已隐藏凭据]")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
 }
 
@@ -336,7 +336,7 @@ function decodeEvidence(value: unknown): EvidenceCitation {
   });
   return {
     ...summary,
-    excerpt: typeof record.excerpt === "string" && record.excerpt.length <= 50_000 ? record.excerpt : fail(),
+    excerpt: typeof record.excerpt === "string" && record.excerpt.length <= 50_000 ? redactPublicText(record.excerpt) : fail(),
     explanation: nonblank(record.explanation, 4_000),
   };
 }

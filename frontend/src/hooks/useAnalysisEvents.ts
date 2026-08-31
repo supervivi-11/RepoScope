@@ -3,17 +3,9 @@ import { useEffect, useState } from "react";
 
 import type { ApiClient } from "../api/client";
 import { watchAnalysisEvents, type ConnectionState } from "../api/sse";
-import type { AnalysisResponse, JsonObject, PublicEvent } from "../contracts";
+import type { PublicEvent } from "../contracts";
 
 export const analysisQueryKey = (analysisId: string) => ["analysis", analysisId] as const;
-
-function countersFromEvent(event: PublicEvent): JsonObject {
-  const counters: JsonObject = {};
-  if (event.data.tool_calls !== undefined) counters.tool_calls = event.data.tool_calls;
-  if (event.data.evidence_rounds !== undefined) counters.evidence_rounds = event.data.evidence_rounds;
-  if (event.data.model_attempts !== undefined) counters.model_attempts = event.data.model_attempts;
-  return counters;
-}
 
 export function useAnalysisEvents({
   analysisId,
@@ -53,17 +45,7 @@ export function useAnalysisEvents({
           if (current.some((item) => item.id === event.id)) return current;
           return [...current, event].sort((left, right) => left.id - right.id);
         });
-        queryClient.setQueryData<AnalysisResponse>(analysisQueryKey(analysisId), (current) => {
-          if (!current) return current;
-          return {
-            ...current,
-            status: event.data.status ?? current.status,
-            counters: { ...current.counters, ...countersFromEvent(event) },
-          };
-        });
-        if (["review_ready", "report_revised", "report_accepted", "analysis_failed"].includes(event.event_type)) {
-          void queryClient.invalidateQueries({ queryKey: analysisQueryKey(analysisId) });
-        }
+        void queryClient.invalidateQueries({ queryKey: analysisQueryKey(analysisId) });
       },
     });
     return () => controller.abort();

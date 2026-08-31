@@ -133,6 +133,16 @@ class AnalysisWorker:
         try:
             issue: IssueIdentity
             if stored.status is PersistentAnalysisStatus.QUEUED:
+                await self._repository.transition(
+                    analysis_id,
+                    PersistentAnalysisStatus.INGESTING,
+                    lease=claim,
+                )
+                stored = await self._repository.get_analysis(analysis_id)
+
+            if stored.status is PersistentAnalysisStatus.INGESTING and not isinstance(
+                stored.state.get("snapshot"), dict
+            ):
                 await self._repository.append_event(
                     analysis_id,
                     "ingestion_started",
@@ -175,8 +185,8 @@ class AnalysisWorker:
                     lease=claim,
                     dedupe_key="stage:indexing",
                 )
-                index = self._index_builder(snapshot)
-                tools = self._tools_builder(index)
+                index = await asyncio.to_thread(self._index_builder, snapshot)
+                tools = await asyncio.to_thread(self._tools_builder, index)
                 await self._repository.transition(
                     analysis_id,
                     PersistentAnalysisStatus.INVESTIGATING,
@@ -184,8 +194,8 @@ class AnalysisWorker:
                 )
                 stored = await self._repository.get_analysis(analysis_id)
             elif stored.status is PersistentAnalysisStatus.INVESTIGATING:
-                index = self._index_builder(snapshot)
-                tools = self._tools_builder(index)
+                index = await asyncio.to_thread(self._index_builder, snapshot)
+                tools = await asyncio.to_thread(self._tools_builder, index)
             else:
                 raise RuntimeError("Analysis cannot be resumed from its durable status.")
 
@@ -216,37 +226,44 @@ class AnalysisWorker:
                 output = await graph.ainvoke(graph_input, config=checkpoint.config)
             final_state = _analysis_state(output)
 
-            for event in final_state.events:
-                await self._persist_graph_event(analysis_id, event, claim)
             if final_state.report is None:
                 raise RuntimeError("Investigation graph returned no report.")
-            await self._repository.save_report(
+            target = _persistent_graph_status(final_state.status)
+            if target is not PersistentAnalysisStatus.REVIEW_READY:
+                raise RuntimeError("Initial investigation did not produce a review result.")
+            result = await self._repository.publish_review_result(
                 analysis_id,
-                final_state.report,
+                report=final_state.report,
                 state={
                     "graph": final_state.model_dump(mode="json"),
                     "snapshot": _snapshot_state(snapshot),
                     "issue": issue.model_dump(mode="json"),
                 },
+                counters=final_state.counters.model_dump(mode="json"),
+                events=tuple(
+                    (
+                        event.sequence,
+                        event.kind,
+                        event.model_dump(mode="json", exclude={"sequence", "kind"}),
+                    )
+                    for event in final_state.events
+                ),
                 lease=claim,
                 result_key="initial",
             )
-            target = _persistent_graph_status(final_state.status)
-            await self._repository.transition(
-                analysis_id,
-                target,
-                counters=final_state.counters.model_dump(mode="json"),
-                lease=claim,
+            await asyncio.to_thread(
+                self._snapshot_cleaner.cleanup_expired, (snapshot,)
             )
-            self._snapshot_cleaner.cleanup_expired((snapshot,))
-            return await self._repository.get_analysis(analysis_id)
+            return result
         except AnalysisConflictError:
             raise
         except Exception as error:
             failure = map_public_failure(error)
             if snapshot is not None:
                 try:
-                    self._snapshot_cleaner.cleanup_expired((snapshot,))
+                    await asyncio.to_thread(
+                        self._snapshot_cleaner.cleanup_expired, (snapshot,)
+                    )
                 except Exception:
                     pass
             return await self._repository.fail_safe(
@@ -264,8 +281,8 @@ class AnalysisWorker:
             feedback = await self._repository.latest_feedback(analysis_id)
             if feedback.processed_at is not None:
                 raise RuntimeError("Feedback command was already processed.")
-            index = self._index_builder(snapshot)
-            tools = self._tools_builder(index)
+            index = await asyncio.to_thread(self._index_builder, snapshot)
+            tools = await asyncio.to_thread(self._tools_builder, index)
             async with self._checkpoint_factory.open(
                 analysis_id,
                 attempt_count=claim.attempt_count,
@@ -318,38 +335,45 @@ class AnalysisWorker:
                     ),
                     lease=claim,
                 )
-                self._snapshot_cleaner.cleanup_expired((snapshot,))
+                await asyncio.to_thread(
+                    self._snapshot_cleaner.cleanup_expired, (snapshot,)
+                )
                 return result
 
             if feedback.comment is None:
                 raise RuntimeError("Revision job has no durable revision comment.")
-            for event in new_events:
-                await self._persist_graph_event(analysis_id, event, claim)
             if final_state.report is None:
                 raise RuntimeError("Revised graph returned no report.")
-            await self._repository.save_report(
+            result = await self._repository.publish_review_result(
                 analysis_id,
-                final_state.report,
+                report=final_state.report,
                 state=durable_state,
+                counters=final_state.counters.model_dump(mode="json"),
+                events=tuple(
+                    (
+                        event.sequence,
+                        event.kind,
+                        event.model_dump(mode="json", exclude={"sequence", "kind"}),
+                    )
+                    for event in new_events
+                ),
                 lease=claim,
                 result_key="revision:1",
-            )
-            await self._repository.transition(
-                analysis_id,
-                _persistent_graph_status(final_state.status),
-                counters=final_state.counters.model_dump(mode="json"),
-                lease=claim,
                 consume_feedback=True,
             )
-            self._snapshot_cleaner.cleanup_expired((snapshot,))
-            return await self._repository.get_analysis(analysis_id)
+            await asyncio.to_thread(
+                self._snapshot_cleaner.cleanup_expired, (snapshot,)
+            )
+            return result
         except AnalysisConflictError:
             raise
         except Exception as error:
             failure = map_public_failure(error)
             if snapshot is not None:
                 try:
-                    self._snapshot_cleaner.cleanup_expired((snapshot,))
+                    await asyncio.to_thread(
+                        self._snapshot_cleaner.cleanup_expired, (snapshot,)
+                    )
                 except Exception:
                     pass
             return await self._repository.fail_safe(

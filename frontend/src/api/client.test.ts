@@ -140,4 +140,13 @@ describe("RepoScope API client", () => {
     await expect(client.getAnalysis(validAnalysisResponse.analysis_id)).rejects.toMatchObject({ code: "invalid_response" });
     await expect(client.submitFeedback(validAnalysisResponse.analysis_id, { action: "accept" })).rejects.toMatchObject({ code: "invalid_response" });
   });
+
+  test.each([true, false])("bounds oversized JSON before parsing (declared=%s)", async (declared) => {
+    const { createApiClient } = await import("./client");
+    const body = JSON.stringify({ padding: "x".repeat(1_100_000) });
+    const headers = declared ? { "Content-Length": String(body.length) } : undefined;
+    const client = createApiClient({ fetch: vi.fn().mockResolvedValue(new Response(body, { status: 200, headers })) });
+
+    await expect(client.getAnalysis(validAnalysisResponse.analysis_id)).rejects.toMatchObject({ code: "invalid_response" });
+  });
 });

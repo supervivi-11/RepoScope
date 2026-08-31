@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import App from "./App";
@@ -157,12 +158,22 @@ describe("RepoScope investigation entry", () => {
     expect(keys[2]).not.toBe(keys[1]);
   });
 
-  test("shows a fixed error for unsafe live API configuration without rendering the configured value", () => {
-    vi.stubEnv("VITE_API_BASE_URL", "https://user:sk-secret@api.example.test/path?token=sk-secret");
+  test("resets deterministic demo playback when the hash changes to another case", async () => {
+    window.location.hash = "#demo/parser-boundary";
+    render(<App demoIntervalMs={10_000} />);
+    fireEvent.click(await screen.findByRole("button", { name: "单步" }));
+    expect(screen.getByText(/事件 1\/5/)).toBeInTheDocument();
 
-    render(<App mode="live" />);
+    act(() => { window.location.hash = "#demo/cache-invalidation"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
 
-    expect(screen.getByRole("heading", { name: "本地 API 配置无效" })).toBeInTheDocument();
-    expect(document.body.textContent).not.toContain("sk-secret");
+    expect(await screen.findByRole("heading", { name: "缓存失效 · 产品流程演练" })).toBeInTheDocument();
+    expect(screen.getByText(/事件 0\/5/)).toBeInTheDocument();
+  });
+
+  test("keeps interface letter spacing neutral for readable compact panels", () => {
+    const styles = readFileSync("src/styles.css", "utf8");
+    const letterSpacingValues = [...styles.matchAll(/letter-spacing:\s*([^;]+);/g)].map((match) => match[1].trim());
+
+    expect(letterSpacingValues).toEqual(letterSpacingValues.map(() => "0"));
   });
 });

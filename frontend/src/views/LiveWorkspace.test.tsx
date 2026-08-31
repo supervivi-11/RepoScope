@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import App from "../App";
 import type { ApiClient } from "../api/client";
+import type { AnalysisResponse } from "../contracts";
 import { validAnalysisResponse } from "../test/fixtures";
 
 afterEach(() => {
@@ -72,4 +73,31 @@ test("shows a fixed unavailable-service message without reflecting exception det
 
   expect(await screen.findByRole("heading", { name: "调查暂不可用" }, { timeout: 3_000 })).toBeInTheDocument();
   expect(document.body.textContent).not.toContain("sk-never-render");
+});
+
+test("historical SSE status never overwrites the authoritative GET snapshot", async () => {
+  window.location.hash = `#analysis/${validAnalysisResponse.analysis_id}`;
+  let releaseSecond!: () => void;
+  const secondRead = new Promise<AnalysisResponse>((resolve) => {
+    releaseSecond = () => resolve({ ...validAnalysisResponse, status: "QUEUED", current_report: null, report_history: [] });
+  });
+  const apiClient: ApiClient = {
+    baseUrl: "",
+    createAnalysis: vi.fn(),
+    getAnalysis: vi.fn()
+      .mockResolvedValueOnce({ ...validAnalysisResponse, status: "QUEUED", current_report: null, report_history: [] })
+      .mockReturnValueOnce(secondRead),
+    submitFeedback: vi.fn(),
+  };
+  const streamFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+    'id: 1\nevent: report_accepted\ndata: {"status":"COMPLETED","tool_calls":12}\n\n',
+    { status: 200, headers: { "Content-Type": "text/event-stream" } },
+  ));
+  render(<App mode="live" apiClient={apiClient} streamFetch={streamFetch} />);
+
+  await screen.findByRole("heading", { name: "调查工作区" });
+  await screen.findByText("报告已接受 · 已完成");
+  expect(document.querySelector(".status-pill")).toHaveTextContent("排队");
+  expect(screen.queryByRole("heading", { name: "调查报告" })).not.toBeInTheDocument();
+  act(() => releaseSecond());
 });

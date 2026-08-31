@@ -46,4 +46,24 @@ describe("investigation report", () => {
     expect(screen.getByText("没有足够证据形成主要假设。")).toBeInTheDocument();
     expect(screen.getByText("暂不建议修改文件。")).toBeInTheDocument();
   });
+
+  test("redacts credential shapes in code excerpts without changing line count", async () => {
+    const { decodeAnalysisReport } = await import("../contracts");
+    const { ReportView } = await import("./ReportView");
+    const report = decodeAnalysisReport({
+      ...validReport,
+      evidence: [{
+        ...validReport.evidence[0],
+        excerpt: "OPENAI_API_KEY=sk-live-example-token\nAuthorization: Bearer ghp_abcdefghijklmnop\nurl='https://user:pass@example.test/path'",
+      }],
+    });
+    render(<ReportView report={report} repoUrl="https://github.com/acme/parser" />);
+
+    const excerpt = screen.getByLabelText("src/parser.py 代码摘录");
+    expect(excerpt.querySelector("code")?.children).toHaveLength(3);
+    expect(excerpt).toHaveTextContent("[已隐藏凭据]");
+    expect(excerpt.textContent).not.toContain("example-token");
+    expect(excerpt.textContent).not.toContain("abcdefghijklmnop");
+    expect(excerpt.textContent).not.toContain("user:pass");
+  });
 });

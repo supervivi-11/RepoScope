@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import shutil
 import tempfile
 from collections.abc import Callable, Iterable
@@ -80,13 +81,32 @@ class IngestionService:
         )
         archive_bytes = await self._github.download_archive(coordinates, commit_sha)
 
+        return await asyncio.to_thread(
+            self._materialize,
+            coordinates,
+            issue,
+            repository,
+            recent_commits,
+            related_issues,
+            commit_sha,
+            archive_bytes,
+        )
+
+    def _materialize(
+        self,
+        coordinates: RepositoryCoordinates,
+        issue: GithubIssue,
+        repository: RepositoryMetadata,
+        recent_commits: tuple[CommitMetadata, ...],
+        related_issues: tuple[GithubIssue, ...],
+        commit_sha: str,
+        archive_bytes: bytes,
+    ) -> IngestionResult:
         self._snapshot_root.mkdir(parents=True, exist_ok=True)
-        snapshot_path = Path(
-            tempfile.mkdtemp(
-                prefix=f"{coordinates.owner}-{coordinates.repository}-{commit_sha[:12]}-",
-                dir=self._snapshot_root,
-            )
-        ).resolve()
+        snapshot_path = Path(tempfile.mkdtemp(
+            prefix=f"{coordinates.owner}-{coordinates.repository}-{commit_sha[:12]}-",
+            dir=self._snapshot_root,
+        )).resolve()
         try:
             extraction = self._extractor.extract(archive_bytes, snapshot_path)
             if not any(

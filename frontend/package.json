@@ -10,6 +10,7 @@
     "build:live": "npm run typecheck && vite build --mode live",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:build-config": "node scripts/verify-build-config.mjs",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
   },

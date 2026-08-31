@@ -21,7 +21,7 @@ export function parseHash(hash: string): AppRoute {
     return { kind: "not-found" };
   }
   if (section === "analysis" && UUID_PATTERN.test(decoded)) {
-    return { kind: "analysis", analysisId: decoded };
+    return { kind: "analysis", analysisId: decoded.toLowerCase() };
   }
   if (section === "demo" && CASE_PATTERN.test(decoded)) {
     return { kind: "demo", caseId: decoded };
@@ -30,7 +30,7 @@ export function parseHash(hash: string): AppRoute {
 }
 
 export function analysisHref(analysisId: string): string {
-  return `#analysis/${encodeURIComponent(analysisId)}`;
+  return `#analysis/${encodeURIComponent(analysisId.toLowerCase())}`;
 }
 
 export function demoHref(caseId: string): string {

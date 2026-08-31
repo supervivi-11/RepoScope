@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -112,6 +114,28 @@ async def test_exact_read_is_summarized_with_deterministic_evidence(tmp_path: Pa
     assert citation.path == "src/parser.py"
     assert (citation.start_line, citation.end_line) == (1, 2)
     assert citation.excerpt == "def parse(value):\n    return value\n"
+
+
+@pytest.mark.anyio
+async def test_sync_tool_work_is_offloaded_so_heartbeats_can_run() -> None:
+    heartbeat_ran = asyncio.Event()
+
+    class BlockingTools:
+        def get_repository_map(self):
+            time.sleep(0.08)
+            return ()
+
+    async def heartbeat() -> None:
+        await asyncio.sleep(0.01)
+        heartbeat_ran.set()
+
+    pulse = asyncio.create_task(heartbeat())
+    result = await dispatch_tool_request(
+        BlockingTools(), ToolRequest(tool_name="get_repository_map", arguments={})
+    )
+    assert heartbeat_ran.is_set()
+    assert result.succeeded is True
+    await pulse
 
 
 @pytest.mark.anyio

@@ -56,7 +56,10 @@ describe("fetch-stream SSE", () => {
       analysisId: validAnalysisResponse.analysis_id,
       baseUrl: "https://local.example",
       fetch: fetcher,
-      getAnalysis: vi.fn(),
+      getAnalysis: vi.fn().mockResolvedValue({
+        ...validAnalysisResponse,
+        status: "COMPLETED",
+      }),
       signal: new AbortController().signal,
       onEvent: (event) => received.push(event.id),
       onSnapshot: vi.fn(),
@@ -188,5 +191,47 @@ describe("fetch-stream SSE", () => {
       onEvent,
     )).rejects.toBeInstanceOf(SseProtocolError);
     expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  test("requires an authoritative terminal GET before closing after a terminal event", async () => {
+    const { watchAnalysisEvents } = await import("./sse");
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(streamed('id: 1\nevent: report_accepted\ndata: {"status":"COMPLETED"}\n\n'))
+      .mockResolvedValueOnce(streamed('id: 2\nevent: report_accepted\ndata: {"status":"COMPLETED"}\n\n'));
+    const getAnalysis = vi.fn()
+      .mockResolvedValueOnce({ ...validAnalysisResponse, status: "REVIEW_READY" })
+      .mockResolvedValueOnce({ ...validAnalysisResponse, status: "COMPLETED" });
+    const snapshots: string[] = [];
+
+    await watchAnalysisEvents({
+      analysisId: validAnalysisResponse.analysis_id,
+      baseUrl: "",
+      fetch: fetcher,
+      getAnalysis,
+      signal: new AbortController().signal,
+      onEvent: vi.fn(),
+      onSnapshot: (snapshot) => snapshots.push(snapshot.status),
+      onConnection: vi.fn(),
+      sleep: async () => undefined,
+    });
+
+    expect(snapshots).toEqual(["REVIEW_READY", "COMPLETED"]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  test("removes its abort listener after a completed sleep", async () => {
+    vi.useFakeTimers();
+    const { sleepWithAbort } = await import("./sse");
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, "addEventListener");
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+
+    const sleeping = sleepWithAbort(10, controller.signal);
+    await vi.advanceTimersByTimeAsync(10);
+    await sleeping;
+
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    vi.useRealTimers();
   });
 });

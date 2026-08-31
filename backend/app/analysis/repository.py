@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
@@ -23,6 +24,7 @@ from .domain import (
     StoredEvent,
     StoredFeedback,
     StoredReport,
+    TERMINAL_STATUSES,
     validate_event_type,
     validate_status_transition,
 )
@@ -274,6 +276,77 @@ class AnalysisRepository:
             await session.flush()
             return _stored_report(row)
 
+    async def publish_review_result(
+        self,
+        analysis_id: UUID,
+        *,
+        report: AnalysisReport,
+        state: dict[str, Any],
+        counters: dict[str, Any],
+        events: tuple[tuple[int, str, dict[str, Any]], ...],
+        result_key: str,
+        lease: Any | None = None,
+        consume_feedback: bool = False,
+    ) -> StoredAnalysis:
+        """Publish one review result as a single externally visible transaction."""
+        if not result_key or len(result_key) > 200:
+            raise ValueError("report result key must contain 1 to 200 characters")
+        safe_counters = sanitize_public_mapping(counters, counters=True)
+        async with self.sessions.begin() as session:
+            job = await self._get_row(session, analysis_id, for_update=True)
+            _assert_active_lease(job, lease)
+            existing_report = await session.scalar(
+                select(AnalysisReportVersionRow).where(
+                    AnalysisReportVersionRow.analysis_id == analysis_id,
+                    AnalysisReportVersionRow.result_key == result_key,
+                )
+            )
+            if existing_report is not None:
+                if job.status is not PersistentAnalysisStatus.REVIEW_READY:
+                    raise AnalysisConflictError("Published review state is inconsistent.")
+            else:
+                for source_sequence, event_type, data in events:
+                    event_type = validate_event_type(event_type)
+                    dedupe_key = f"graph:{source_sequence}"
+                    duplicate = await session.scalar(
+                        select(AnalysisEventRow.id).where(
+                            AnalysisEventRow.analysis_id == analysis_id,
+                            AnalysisEventRow.dedupe_key == dedupe_key,
+                        )
+                    )
+                    if duplicate is not None:
+                        continue
+                    session.add(
+                        AnalysisEventRow(
+                            analysis_id=analysis_id,
+                            sequence=job.next_event_sequence,
+                            event_type=event_type,
+                            data=sanitize_public_mapping(data),
+                            dedupe_key=dedupe_key,
+                        )
+                    )
+                    job.next_event_sequence += 1
+                session.add(
+                    AnalysisReportVersionRow(
+                        analysis_id=analysis_id,
+                        version=job.next_report_version,
+                        report=report.model_dump(mode="json"),
+                        state=state,
+                        result_key=result_key,
+                    )
+                )
+                job.next_report_version += 1
+                validate_status_transition(
+                    job.status, PersistentAnalysisStatus.REVIEW_READY
+                )
+                job.status = PersistentAnalysisStatus.REVIEW_READY
+                job.state = state
+                job.counters = safe_counters
+                job.updated_at = utc_now()
+                if consume_feedback:
+                    await _consume_pending_feedback(session, job)
+        return await self.get_analysis(analysis_id)
+
     async def transition(
         self,
         analysis_id: UUID,
@@ -468,6 +541,24 @@ class AnalysisRepository:
                     )
                 )
         return await self.get_analysis(analysis_id)
+
+    async def active_snapshot_paths(self) -> set[Path]:
+        """Return snapshot roots still referenced by nonterminal analyses."""
+        async with self.sessions() as session:
+            states = (
+                await session.scalars(
+                    select(AnalysisJobRow.state).where(
+                        AnalysisJobRow.status.not_in(TERMINAL_STATUSES)
+                    )
+                )
+            ).all()
+        paths: set[Path] = set()
+        for state in states:
+            snapshot = state.get("snapshot") if isinstance(state, dict) else None
+            root = snapshot.get("root_path") if isinstance(snapshot, dict) else None
+            if isinstance(root, str) and root:
+                paths.add(Path(root).resolve())
+        return paths
 
     @staticmethod
     async def _get_row(

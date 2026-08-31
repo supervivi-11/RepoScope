@@ -135,21 +135,20 @@ export async function consumeSseResponse(
   }
 }
 
-function abortableSleep(delayMs: number, signal: AbortSignal): Promise<void> {
+export function sleepWithAbort(delayMs: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
       reject(new DOMException("Aborted", "AbortError"));
       return;
     }
-    const timeout = globalThis.setTimeout(resolve, delayMs);
-    signal.addEventListener(
-      "abort",
-      () => {
-        globalThis.clearTimeout(timeout);
-        reject(new DOMException("Aborted", "AbortError"));
-      },
-      { once: true },
-    );
+    const finish = () => { signal.removeEventListener("abort", abort); resolve(); };
+    const abort = () => {
+      globalThis.clearTimeout(timeout);
+      signal.removeEventListener("abort", abort);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const timeout = globalThis.setTimeout(finish, delayMs);
+    signal.addEventListener("abort", abort, { once: true });
   });
 }
 
@@ -158,7 +157,7 @@ function isAbort(error: unknown, signal: AbortSignal): boolean {
 }
 
 export async function watchAnalysisEvents(options: WatchAnalysisOptions): Promise<void> {
-  const sleep = options.sleep ?? abortableSleep;
+  const sleep = options.sleep ?? sleepWithAbort;
   const reconnectBudget = options.maxReconnectAttempts ?? 3;
   const baseDelay = options.baseDelayMs ?? 250;
   const maxDelay = options.maxDelayMs ?? 2_000;
@@ -180,8 +179,13 @@ export async function watchAnalysisEvents(options: WatchAnalysisOptions): Promis
       const consumed = await consumeSseResponse(response, lastEventId, options.onEvent, options.signal);
       lastEventId = consumed.lastEventId;
       if (consumed.terminal) {
-        options.onConnection("closed");
-        return;
+        const snapshot = await options.getAnalysis(options.analysisId);
+        options.onSnapshot(snapshot);
+        if (terminalStatus(snapshot.status)) {
+          options.onConnection("closed");
+          return;
+        }
+        throw new SseProtocolError("终态事件尚未完成权威发布");
       }
       throw new SseProtocolError("事件流已断开");
     } catch (error) {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Any
 
@@ -131,7 +132,7 @@ async def dispatch_tool_request(
 
     try:
         method = getattr(tools, tool_name)
-        result = method(**arguments.model_dump())
+        result = await asyncio.to_thread(method, **arguments.model_dump())
         if inspect.isawaitable(result):
             result = await result
     except Exception:
