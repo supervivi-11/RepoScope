@@ -265,9 +265,9 @@ async def test_worker_recovers_active_stage_without_reingestion_and_uses_checkpo
             raise AssertionError("active-stage recovery must not resolve a new commit")
 
     class RecoveringGraph:
-        async def ainvoke(self, state, *, config):
+        async def astream(self, state, config=None, *, stream_mode, durability):
             calls.append(state)
-            return _final_state(analysis.analysis_id)
+            yield _final_state(analysis.analysis_id)
 
     checkpoint_factory = MemoryCheckpointFactory(saver)
     worker = AnalysisWorker(
@@ -350,8 +350,8 @@ async def test_worker_persists_snapshot_before_index_and_recovery_is_idempotent(
     assert recovered_claim is not None
 
     class FinalGraph:
-        async def ainvoke(self, state, *, config):
-            return _final_state(analysis.analysis_id)
+        async def astream(self, state, config=None, *, stream_mode, durability):
+            yield _final_state(analysis.analysis_id)
 
     recovery_worker = AnalysisWorker(
         repository=repository,
@@ -540,15 +540,20 @@ async def test_revision_checkpoint_crash_recovery_does_not_resend_command(
         def __init__(self, graph) -> None:
             self.graph = graph
 
-        async def ainvoke(self, value, *, config):
+        async def astream(self, value, config=None, *, stream_mode, durability):
             nonlocal crash_once
             if isinstance(value, Command):
                 commands.append(value)
-            result = await self.graph.ainvoke(value, config=config)
+            async for result in self.graph.astream(
+                value,
+                config=config,
+                stream_mode=stream_mode,
+                durability=durability,
+            ):
+                yield result
             if isinstance(value, Command) and crash_once:
                 crash_once = False
                 raise SimulatedProcessCrash()
-            return result
 
     worker = AnalysisWorker(
         repository=repository,
@@ -615,10 +620,10 @@ async def test_worker_heartbeats_during_long_graph_execution(
             )
 
     class SlowGraph:
-        async def ainvoke(self, state, *, config):
+        async def astream(self, state, config=None, *, stream_mode, durability):
             graph_started.set()
             await finish_graph.wait()
-            return _final_state(analysis.analysis_id)
+            yield _final_state(analysis.analysis_id)
 
     worker = AnalysisWorker(
         repository=repository,
@@ -674,7 +679,7 @@ async def test_heartbeat_loss_cancels_main_work_before_later_mutations(
             )
 
     class SlowGraph:
-        async def ainvoke(self, state, *, config):
+        async def astream(self, state, config=None, *, stream_mode, durability):
             graph_started.set()
             try:
                 await asyncio.sleep(0.08)
@@ -682,7 +687,7 @@ async def test_heartbeat_loss_cancels_main_work_before_later_mutations(
                 graph_cancelled.set()
                 raise
             graph_completed.set()
-            return _final_state(analysis.analysis_id)
+            yield _final_state(analysis.analysis_id)
 
     class LosingQueue:
         heartbeat_interval = 0.001

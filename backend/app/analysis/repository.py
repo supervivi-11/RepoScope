@@ -12,7 +12,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent import AnalysisReport
+from app.agent.compatibility import load_persisted_report
 from app.ingestion import RepositoryCoordinates, validate_issue_number
+from app.report_limits import PREVIOUS_REPORT_HISTORY_MAX
 
 from .domain import (
     AnalysisConflictError,
@@ -41,6 +43,7 @@ from .failures import (
     safe_public_error,
     safe_public_mapping,
     sanitize_public_mapping,
+    sanitize_public_report,
 )
 
 
@@ -117,18 +120,19 @@ class AnalysisRepository:
                     await session.scalars(
                         select(AnalysisReportVersionRow)
                         .where(AnalysisReportVersionRow.analysis_id == analysis_id)
-                        .order_by(AnalysisReportVersionRow.version)
+                        .order_by(AnalysisReportVersionRow.version.desc())
+                        .limit(PREVIOUS_REPORT_HISTORY_MAX + 1)
                     )
                 ).all()
             )
             reports = tuple(
                 StoredReport(
                     version=item.version,
-                    report=AnalysisReport.model_validate(item.report),
+                    report=sanitize_public_report(load_persisted_report(item.report)),
                     state=dict(item.state),
                     created_at=_aware(item.created_at),
                 )
-                for item in report_rows
+                for item in reversed(report_rows)
             )
             error_code, error_message = safe_public_error(
                 row.error_code, row.error_message
@@ -173,7 +177,7 @@ class AnalysisRepository:
                     )
                 )
                 if existing is not None:
-                    return _stored_event(existing)
+                    return _deduped_event(existing, event_type, safe_data)
             row = AnalysisEventRow(
                 analysis_id=analysis_id,
                 sequence=job.next_event_sequence,
@@ -250,6 +254,7 @@ class AnalysisRepository:
     ) -> StoredReport:
         if result_key is not None and (not result_key or len(result_key) > 200):
             raise ValueError("report result key must contain 1 to 200 characters")
+        report = sanitize_public_report(report)
         async with self.sessions.begin() as session:
             job = await self._get_row(session, analysis_id, for_update=True)
             _assert_active_lease(job, lease)
@@ -292,6 +297,7 @@ class AnalysisRepository:
         if not result_key or len(result_key) > 200:
             raise ValueError("report result key must contain 1 to 200 characters")
         safe_counters = sanitize_public_mapping(counters, counters=True)
+        report = sanitize_public_report(report)
         async with self.sessions.begin() as session:
             job = await self._get_row(session, analysis_id, for_update=True)
             _assert_active_lease(job, lease)
@@ -309,12 +315,15 @@ class AnalysisRepository:
                     event_type = validate_event_type(event_type)
                     dedupe_key = f"graph:{source_sequence}"
                     duplicate = await session.scalar(
-                        select(AnalysisEventRow.id).where(
+                        select(AnalysisEventRow).where(
                             AnalysisEventRow.analysis_id == analysis_id,
                             AnalysisEventRow.dedupe_key == dedupe_key,
                         )
                     )
                     if duplicate is not None:
+                        _deduped_event(
+                            duplicate, event_type, sanitize_public_mapping(data)
+                        )
                         continue
                     session.add(
                         AnalysisEventRow(
@@ -484,12 +493,13 @@ class AnalysisRepository:
                 event_type = validate_event_type(event_type)
                 dedupe_key = f"graph:{source_sequence}"
                 existing = await session.scalar(
-                    select(AnalysisEventRow.id).where(
+                    select(AnalysisEventRow).where(
                         AnalysisEventRow.analysis_id == analysis_id,
                         AnalysisEventRow.dedupe_key == dedupe_key,
                     )
                 )
                 if existing is not None:
+                    _deduped_event(existing, event_type, sanitize_public_mapping(data))
                     continue
                 safe_data = sanitize_public_mapping(data)
                 session.add(
@@ -595,6 +605,17 @@ def _assert_active_lease(row: AnalysisJobRow, lease: Any | None) -> None:
         or _aware(row.lease_expires_at) <= utc_now()
     ):
         raise AnalysisConflictError("Analysis lease is stale or owned by another worker.")
+
+
+def _deduped_event(
+    row: AnalysisEventRow,
+    event_type: str,
+    safe_data: dict[str, Any],
+) -> StoredEvent:
+    stored = _stored_event(row)
+    if stored.event_type != event_type or stored.data != safe_data:
+        raise AnalysisConflictError("Event dedupe key conflicts with stored data.")
+    return stored
 
 
 def _stored_event(row: AnalysisEventRow) -> StoredEvent:

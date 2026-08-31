@@ -74,7 +74,7 @@ class FakeGraph:
         self._calls = calls
         self._report = report
 
-    async def ainvoke(self, state, *, config):
+    async def astream(self, state, config=None, *, stream_mode, durability):
         self._calls.append(f"graph:{config['configurable']['thread_id']}")
         event = AnalysisEvent(
             sequence=1,
@@ -82,7 +82,7 @@ class FakeGraph:
             status=AnalysisStatus.REVIEW_READY,
             kind="review_ready",
         )
-        return state.model_copy(
+        yield state.model_copy(
             update={
                 "phase": AnalysisPhase.REVIEW,
                 "status": AnalysisStatus.REVIEW_READY,
@@ -245,6 +245,42 @@ def test_failure_mapping_and_recursive_redaction_are_stable() -> None:
     }
 
 
+@pytest.mark.parametrize("delimiter", ["\n", "\r\n", "\r"])
+def test_public_redaction_preserves_line_delimiters_and_is_idempotent(
+    delimiter: str,
+) -> None:
+    """Breaks if credential removal changes citation line coordinates."""
+    source = delimiter.join(
+        (
+            "Authorization:",
+            "Bearer sk-live-secret",
+            'OPENAI_API_KEY="opaqueCredential123456"',
+            '"password": "hunter2"',
+            "DATABASE_PASSWORD=supersecretvalue",
+            "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP",
+            'token = "abc def"',
+            "token_count = 12",
+            "AuthorizationPolicy = strict",
+        )
+    )
+
+    cleaned = redact_public_data(source)
+
+    assert isinstance(cleaned, str)
+    assert cleaned.splitlines(keepends=True) == [
+        item + delimiter
+        for item in cleaned.split(delimiter)[:-1]
+    ] + [cleaned.split(delimiter)[-1]]
+    assert cleaned.count(delimiter) == source.count(delimiter)
+    assert "sk-live-secret" not in cleaned
+    assert "opaqueCredential123456" not in cleaned
+    for secret in ("hunter2", "supersecretvalue", "AKIAABCDEFGHIJKLMNOP", "abc def"):
+        assert secret not in cleaned
+    assert "token_count = 12" in cleaned
+    assert "AuthorizationPolicy = strict" in cleaned
+    assert redact_public_data(cleaned) == cleaned
+
+
 def test_recursive_redaction_covers_message_variants_and_short_sk_tokens() -> None:
     """Breaks if nested prompt/message aliases or short provider keys remain public."""
     cleaned = redact_public_data(
@@ -339,7 +375,7 @@ async def test_revision_resumes_checkpoint_and_reuses_immutable_snapshot(
     class RevisableGraph:
         state = None
 
-        async def ainvoke(self, command, *, config):
+        async def astream(self, command, config=None, *, stream_mode, durability):
             calls.append(command)
             if isinstance(command, Command):
                 assert command.resume["action"] == "revise"
@@ -359,7 +395,8 @@ async def test_revision_resumes_checkpoint_and_reuses_immutable_snapshot(
                         "events": self.state.events + (event,),
                     }
                 )
-                return self.state
+                yield self.state
+                return
             event = AnalysisEvent(
                 sequence=1,
                 phase=AnalysisPhase.REVIEW,
@@ -374,7 +411,7 @@ async def test_revision_resumes_checkpoint_and_reuses_immutable_snapshot(
                     "events": (event,),
                 }
             )
-            return self.state
+            yield self.state
 
     graph = RevisableGraph()
     analysis = await repository.create_analysis(
@@ -439,7 +476,7 @@ async def test_accept_resumes_checkpoint_and_completes_durably_once(
     class AcceptingGraph:
         state = None
 
-        async def ainvoke(self, value, *, config):
+        async def astream(self, value, config=None, *, stream_mode, durability):
             calls.append(value)
             if isinstance(value, Command):
                 assert value.resume["action"] == "accept"
@@ -459,7 +496,8 @@ async def test_accept_resumes_checkpoint_and_completes_durably_once(
                         "events": self.state.events + (accepted,),
                     }
                 )
-                return self.state
+                yield self.state
+                return
             ready = AnalysisEvent(
                 sequence=1,
                 phase=AnalysisPhase.REVIEW,
@@ -474,7 +512,7 @@ async def test_accept_resumes_checkpoint_and_completes_durably_once(
                     "events": (ready,),
                 }
             )
-            return self.state
+            yield self.state
 
     graph = AcceptingGraph()
     terminal_heartbeat_started = asyncio.Event()

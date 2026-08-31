@@ -9,10 +9,18 @@ from app.agent import (
     AnalysisReport,
     AnalysisStatus,
     EvidenceCitation,
+    EvidenceCitationSummary,
     FeedbackCommand,
     Hypothesis,
     InvestigationBudget,
     ToolRequest,
+)
+from app.report_limits import (
+    EVIDENCE_EXCERPT_MAX_BYTES,
+    EVIDENCE_EXCERPT_MAX_CHARS,
+    HYPOTHESIS_EVIDENCE_REFS_MAX,
+    REPORT_REQUIRED_TEXT_MAX_CHARS,
+    REPORT_SERIALIZED_MAX_BYTES,
 )
 
 
@@ -122,7 +130,7 @@ def test_report_requires_confidence_in_closed_unit_interval() -> None:
         primary_hypothesis=Hypothesis(
             statement="Validation is missing.",
             confidence=0.8,
-            evidence=(_citation(),),
+            evidence=(_citation().summary(),),
         ),
         evidence=(_citation(),),
         confidence=0.8,
@@ -131,6 +139,99 @@ def test_report_requires_confidence_in_closed_unit_interval() -> None:
 
     with pytest.raises(ValidationError):
         AnalysisReport(**{**report.model_dump(), "confidence": -0.01})
+
+
+def test_report_contract_uses_compact_evidence_refs_and_tight_text_limits() -> None:
+    """Breaks if runtime reports drift from the public bounded response contract."""
+    citation = _citation(
+        excerpt="😀" * EVIDENCE_EXCERPT_MAX_CHARS,
+        explanation="Evidence reaches the exact public boundary.",
+    )
+    assert len(citation.excerpt) == EVIDENCE_EXCERPT_MAX_CHARS
+    assert len(citation.excerpt.encode("utf-8")) == EVIDENCE_EXCERPT_MAX_BYTES
+
+    hypothesis = Hypothesis(
+        statement="x" * 2_000,
+        confidence=0.7,
+        evidence=(citation.summary(),) * HYPOTHESIS_EVIDENCE_REFS_MAX,
+    )
+    report = AnalysisReport(
+        outcome="root_cause_identified",
+        issue_summary="s" * REPORT_REQUIRED_TEXT_MAX_CHARS,
+        observed_behavior="Observed",
+        expected_behavior="Expected",
+        primary_hypothesis=hypothesis,
+        evidence=(citation,),
+        confidence=0.7,
+    )
+
+    assert isinstance(report.primary_hypothesis.evidence[0], EvidenceCitationSummary)
+
+    with pytest.raises(ValidationError):
+        _citation(excerpt="😀" * (EVIDENCE_EXCERPT_MAX_CHARS + 1))
+    with pytest.raises(ValidationError):
+        Hypothesis(
+            statement="x" * 2_001,
+            confidence=0.7,
+            evidence=(citation.summary(),),
+        )
+    with pytest.raises(ValidationError):
+        Hypothesis(
+            statement="Within bound",
+            confidence=0.7,
+            evidence=(citation.summary(),) * (HYPOTHESIS_EVIDENCE_REFS_MAX + 1),
+        )
+    with pytest.raises(ValidationError):
+        Hypothesis(
+            statement="Full citations are no longer duplicated under hypotheses.",
+            confidence=0.7,
+            evidence=(citation.model_dump(),),
+        )
+    with pytest.raises(ValidationError):
+        AnalysisReport(
+            **{**report.model_dump(), "issue_summary": "s" * (REPORT_REQUIRED_TEXT_MAX_CHARS + 1)}
+        )
+
+
+def test_serialized_report_cap_counts_actual_json_bytes_without_giant_allocations() -> None:
+    """Breaks if escaped strings can exceed the finite persistence/API report cap."""
+    citation = _citation(
+        excerpt="\\" * 7_000,
+        explanation="Large but still bounded citation text.",
+    )
+    accepted = AnalysisReport(
+        outcome="root_cause_identified",
+        issue_summary="Escaped evidence remains under the serialized report cap.",
+        observed_behavior="Observed",
+        expected_behavior="Expected",
+        primary_hypothesis=Hypothesis(
+            statement="Evidence is referenced compactly.",
+            confidence=0.8,
+            evidence=(citation.summary(),),
+        ),
+        evidence=(citation,) * 64,
+        confidence=0.8,
+    )
+    assert len(accepted.model_dump_json().encode("utf-8")) < REPORT_SERIALIZED_MAX_BYTES
+
+    oversized = _citation(
+        excerpt="\\" * EVIDENCE_EXCERPT_MAX_CHARS,
+        explanation="Escaping each backslash must count against the JSON byte cap.",
+    )
+    with pytest.raises(ValidationError):
+        AnalysisReport(
+            outcome="root_cause_identified",
+            issue_summary="Escaped evidence exceeds the serialized report cap.",
+            observed_behavior="Observed",
+            expected_behavior="Expected",
+            primary_hypothesis=Hypothesis(
+                statement="Evidence is referenced compactly.",
+                confidence=0.8,
+                evidence=(oversized.summary(),),
+            ),
+            evidence=(oversized,) * 64,
+            confidence=0.8,
+        )
 
 
 def test_evidence_paths_share_the_task_three_normalizer() -> None:

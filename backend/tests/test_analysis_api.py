@@ -13,6 +13,8 @@ from app import api as api_module
 from app.agent import AnalysisReport
 from app.analysis import AnalysisRepository, PersistentAnalysisStatus, StoredEvent
 from app.analysis.failures import PublicFailure
+from app.analysis.queue import PostgresJobQueue
+from app.analysis.service import WorkerService
 from app.api import SSESettings, StaticDemoStore, create_app, iter_sse_events
 from app.db import metadata
 
@@ -55,6 +57,52 @@ async def _make_review_ready(repository: AnalysisRepository, analysis_id) -> Non
         PersistentAnalysisStatus.REVIEW_READY,
     ):
         await repository.transition(analysis_id, status)
+
+
+@pytest.mark.anyio
+async def test_attempt_budget_failure_remains_canonical_in_storage_event_and_api(
+    repository: AnalysisRepository,
+    client: AsyncClient,
+) -> None:
+    """Breaks if attempts_exhausted is silently rewritten to internal_error."""
+    created = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=99
+    )
+    queue = PostgresJobQueue(repository.sessions)
+    first = await queue.claim_next(worker_id="worker-first")
+    assert first is not None
+    await queue.release(first)
+
+    class UnexpectedWorker:
+        async def run(self, claim) -> None:
+            raise AssertionError("poison claims must not run")
+
+    service = WorkerService(
+        queue=queue,
+        worker=UnexpectedWorker(),
+        repository=repository,
+        worker_id="worker-poison",
+        max_attempts=1,
+    )
+
+    assert await service.run_once() is True
+    stored = await repository.get_analysis(created.analysis_id)
+    events = await repository.list_events(created.analysis_id)
+    response = await client.get(f"/api/v1/analyses/{created.analysis_id}")
+
+    expected = {
+        "code": "attempts_exhausted",
+        "message": "Analysis retry budget was exhausted.",
+    }
+    assert stored.status is PersistentAnalysisStatus.FAILED
+    assert {"code": stored.error_code, "message": stored.error_message} == expected
+    assert events[-1].event_type == "analysis_failed"
+    assert events[-1].data == {
+        "code": expected["code"],
+        "error": expected["message"],
+    }
+    assert response.status_code == 200
+    assert response.json()["error"] == expected
 
 
 @pytest.mark.anyio
@@ -192,8 +240,8 @@ async def test_get_analysis_returns_safe_state_report_history_and_errors(
     assert body["current_report"]["issue_summary"] == "Revised"
     assert [item["report"]["issue_summary"] for item in body["report_history"]] == [
         "Original",
-        "Revised",
     ]
+    assert body["report_history"][0]["version"] == 1
     assert body["error"] is None
     assert missing.status_code == 404
     assert malformed.status_code == 422

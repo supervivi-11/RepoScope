@@ -7,6 +7,7 @@ from math import isfinite
 from typing import Any
 
 from app.agent import (
+    AnalysisReport,
     ModelSafetyError,
     ModelSchemaError,
     PermanentModelError,
@@ -39,6 +40,11 @@ class PublicFailure:
 _INTERNAL_FAILURE = PublicFailure(
     "internal_error", "Analysis failed safely.", 500
 )
+ATTEMPTS_EXHAUSTED_FAILURE = PublicFailure(
+    "attempts_exhausted",
+    "Analysis retry budget was exhausted.",
+    500,
+)
 _CANONICAL_FAILURES = frozenset(
     {
         PublicFailure("invalid_request", "Repository input is invalid.", 422),
@@ -56,6 +62,7 @@ _CANONICAL_FAILURES = frozenset(
         ),
         PublicFailure("analysis_failed", "Analysis failed safely.", 500),
         PublicFailure("analysis_failed", "Static analysis failed safely.", 500),
+        ATTEMPTS_EXHAUSTED_FAILURE,
         _INTERNAL_FAILURE,
     }
 )
@@ -89,12 +96,28 @@ _SAFE_PAYLOAD_METADATA_SUFFIXES = frozenset({"count", "type"})
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _KEY_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _SECRET_PATTERN = re.compile(
-    r"(?i)\b(?:sk|gh[oprsu])-[A-Za-z0-9_-]+\b|\bgh[pors]_[A-Za-z0-9]+\b"
+    r"(?i)\b(?:sk|gh[oprsu])-[A-Za-z0-9_-]+\b"
+    r"|\bgh[pors]_[A-Za-z0-9]+\b|\bgithub_pat_[A-Za-z0-9_]+\b"
 )
 _CREDENTIAL_URL_PATTERN = re.compile(r"(https?://)[^\s/@:]+:[^\s/@]+@", re.I)
 _AUTHORIZATION_PATTERN = re.compile(
-    r"(?i)authorization\s*[:=]\s*(?:bearer\s+)?[^\s,;]+"
+    r"(?i)authorization[ \t]*[\"']?[ \t]*[:=,][ \t]*[\"']?[ \t]*"
+    r"(?:bearer|basic)[ \t]+[^\"',; \t)]+"
 )
+_STANDALONE_AUTH_PATTERN = re.compile(
+    r"(?i)\b(?:bearer|basic)[ \t]+[^\"',; \t)]+"
+)
+_QUOTED_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)(?P<prefix>[\"']?(?P<key>[A-Za-z0-9_-]+)[\"']?[ \t]*[:=][ \t]*)"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)"
+)
+_UNQUOTED_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)(?P<prefix>[\"']?(?P<key>[A-Za-z0-9_-]+)[\"']?[ \t]*[:=][ \t]*)"
+    r"(?P<value>[^\"',; \t)]+)"
+)
+_LINE_SEPARATOR_PATTERN = re.compile(r"(\r\n|\n|\r)")
+_PRIVATE_KEY_BEGIN_PATTERN = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----", re.I)
+_PRIVATE_KEY_END_PATTERN = re.compile(r"-----END [^-]*PRIVATE KEY-----", re.I)
 
 
 def map_public_failure(error: Exception) -> PublicFailure:
@@ -139,12 +162,74 @@ def redact_public_data(value: Any) -> Any:
     if isinstance(value, (tuple, list)):
         return [redact_public_data(item) for item in value]
     if isinstance(value, str):
-        redacted = _CREDENTIAL_URL_PATTERN.sub(r"\1[REDACTED]@", value)
-        redacted = _AUTHORIZATION_PATTERN.sub("[REDACTED]", redacted)
-        return _SECRET_PATTERN.sub("[REDACTED]", redacted)
+        return redact_public_text(value)
     if value is None or type(value) in {bool, int, float}:
         return value
     return "[REDACTED]"
+
+
+def redact_public_text(value: str) -> str:
+    """Redact credentials without changing any original line delimiter."""
+    parts = _LINE_SEPARATOR_PATTERN.split(value)
+    private_key = False
+    for index in range(0, len(parts), 2):
+        line = parts[index]
+        if _PRIVATE_KEY_BEGIN_PATTERN.search(line):
+            private_key = True
+            parts[index] = "[REDACTED PRIVATE KEY]"
+            continue
+        if private_key:
+            parts[index] = "[REDACTED PRIVATE KEY]"
+            if _PRIVATE_KEY_END_PATTERN.search(line):
+                private_key = False
+            continue
+        redacted = _CREDENTIAL_URL_PATTERN.sub(r"\1[REDACTED]@", line)
+        redacted = _AUTHORIZATION_PATTERN.sub("[REDACTED]", redacted)
+        redacted = _STANDALONE_AUTH_PATTERN.sub("[REDACTED]", redacted)
+        redacted = _QUOTED_ASSIGNMENT_PATTERN.sub(
+            _redact_quoted_assignment,
+            redacted,
+        )
+        redacted = _UNQUOTED_ASSIGNMENT_PATTERN.sub(
+            _redact_unquoted_assignment,
+            redacted,
+        )
+        parts[index] = _SECRET_PATTERN.sub("[REDACTED]", redacted)
+    return "".join(parts)
+
+
+def _sensitive_text_key(key: str) -> bool:
+    folded = re.sub(r"[-_]+", "_", key.casefold()).strip("_")
+    return folded in {"token", "password", "secret"} or folded.endswith(
+        (
+            "_token",
+            "_password",
+            "_secret",
+            "_client_secret",
+            "_api_key",
+            "_access_key",
+            "_access_key_id",
+            "_private_key",
+        )
+    )
+
+
+def _redact_quoted_assignment(match: re.Match[str]) -> str:
+    if not _sensitive_text_key(match.group("key")):
+        return match.group(0)
+    quote = match.group("quote")
+    return f'{match.group("prefix")}{quote}[REDACTED]{quote}'
+
+
+def _redact_unquoted_assignment(match: re.Match[str]) -> str:
+    if not _sensitive_text_key(match.group("key")):
+        return match.group(0)
+    return f'{match.group("prefix")}[REDACTED]'
+
+
+def sanitize_public_report(report: AnalysisReport) -> AnalysisReport:
+    cleaned = redact_public_data(report.model_dump(mode="json"))
+    return AnalysisReport.model_validate(cleaned)
 
 
 def _sensitive_key(key: str) -> bool:

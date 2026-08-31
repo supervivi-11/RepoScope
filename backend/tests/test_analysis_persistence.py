@@ -210,6 +210,55 @@ async def test_publish_review_result_atomically_exposes_report_events_and_status
 
 
 @pytest.mark.anyio
+async def test_graph_event_dedupe_keys_are_exact_and_conflict_on_divergence(
+    repository: AnalysisRepository,
+) -> None:
+    """Breaks if retry/backfill can silently accept a divergent graph event."""
+    analysis = await repository.create_analysis(
+        repo_url="https://github.com/owner/repo", issue_number=203
+    )
+    for status in (
+        PersistentAnalysisStatus.INGESTING,
+        PersistentAnalysisStatus.INDEXING,
+        PersistentAnalysisStatus.INVESTIGATING,
+    ):
+        await repository.transition(analysis.analysis_id, status)
+
+    first = await repository.append_event(
+        analysis.analysis_id,
+        "issue_understood",
+        {"status": "INVESTIGATING", "phase": "understanding"},
+        dedupe_key="graph:1",
+    )
+    duplicate = await repository.append_event(
+        analysis.analysis_id,
+        "issue_understood",
+        {"phase": "understanding", "status": "INVESTIGATING"},
+        dedupe_key="graph:1",
+    )
+
+    assert duplicate.sequence == first.sequence
+    assert len(await repository.list_events(analysis.analysis_id)) == 1
+
+    with pytest.raises(AnalysisConflictError):
+        await repository.append_event(
+            analysis.analysis_id,
+            "issue_understood",
+            {"status": "INVESTIGATING", "phase": "different"},
+            dedupe_key="graph:1",
+        )
+    with pytest.raises(AnalysisConflictError):
+        await repository.publish_review_result(
+            analysis.analysis_id,
+            report=_report("Divergent retry"),
+            state={"graph": {"status": "REVIEW_READY"}},
+            counters={},
+            events=((1, "issue_understood", {"status": "INVESTIGATING", "phase": "different"}),),
+            result_key="initial",
+        )
+
+
+@pytest.mark.anyio
 async def test_active_snapshot_paths_excludes_terminal_jobs(
     repository: AnalysisRepository, tmp_path: Path
 ) -> None:

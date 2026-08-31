@@ -92,19 +92,9 @@ def downgrade_unsubstantiated_report(
     index: PythonRepositoryIndex,
     report: AnalysisReport,
 ) -> tuple[AnalysisReport, EvidenceValidationResult]:
-    candidates = _deduplicate_citations(
-        report.evidence
-        + tuple(
-            citation
-            for hypothesis in (
-                *((report.primary_hypothesis,) if report.primary_hypothesis else ()),
-                *report.alternative_hypotheses,
-            )
-            for citation in hypothesis.evidence
-        )
-    )
+    candidates = _deduplicate_citations(report.evidence)
     validation = validate_evidence(index, candidates)
-    valid_keys = {_citation_key(item) for item in validation.valid}
+    valid_keys = {_summary_key(item.summary()) for item in validation.valid}
 
     primary = _filter_hypothesis(report.primary_hypothesis, valid_keys)
     alternatives = tuple(
@@ -145,13 +135,15 @@ def downgrade_unsubstantiated_report(
 
 def _filter_hypothesis(
     hypothesis: Hypothesis | None,
-    valid_keys: set[tuple[str, str, int, int, str]],
+    valid_keys: set[tuple[str, str, int, int]],
 ) -> Hypothesis | None:
     if hypothesis is None:
         return None
     evidence = tuple(
-        item for item in hypothesis.evidence if _citation_key(item) in valid_keys
+        item for item in hypothesis.evidence if _summary_key(item) in valid_keys
     )
+    if not evidence:
+        return None
     return hypothesis.model_copy(update={"evidence": evidence})
 
 
@@ -171,4 +163,13 @@ def _citation_key(item: EvidenceCitation) -> tuple[str, str, int, int, str]:
         item.start_line,
         item.end_line,
         item.excerpt,
+    )
+
+
+def _summary_key(item: EvidenceCitationSummary) -> tuple[str, str, int, int]:
+    return (
+        item.commit_sha,
+        item.path,
+        item.start_line,
+        item.end_line,
     )

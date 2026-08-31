@@ -81,6 +81,42 @@ def test_evidence_validation_accepts_only_an_exact_read_code_match(tmp_path: Pat
     assert result.invalid == ()
 
 
+def test_report_validation_keeps_only_hypothesis_refs_resolved_by_top_level_evidence(
+    tmp_path: Path,
+) -> None:
+    """Breaks if hypotheses can smuggle unresolved full evidence payloads."""
+    valid = _citation()
+    unresolved = valid.model_copy(update={"start_line": 2, "end_line": 2})
+    report = AnalysisReport(
+        outcome="root_cause_identified",
+        issue_summary="Parser regression.",
+        observed_behavior="A value is returned.",
+        expected_behavior="It should be rejected.",
+        primary_hypothesis=Hypothesis(
+            statement="The parser lacks validation.",
+            confidence=0.9,
+            evidence=(valid.summary(), unresolved.summary()),
+        ),
+        alternative_hypotheses=(
+            Hypothesis(
+                statement="A second explanation is possible.",
+                confidence=0.5,
+                evidence=(unresolved.summary(),),
+            ),
+        ),
+        evidence=(valid,),
+        implementation_steps=("Add validation.",),
+        confidence=0.9,
+    )
+
+    sanitized, validation = downgrade_unsubstantiated_report(_index(tmp_path), report)
+
+    assert validation.valid == (valid,)
+    assert sanitized.primary_hypothesis is not None
+    assert sanitized.primary_hypothesis.evidence == (valid.summary(),)
+    assert sanitized.alternative_hypotheses == ()
+
+
 def test_report_without_valid_primary_evidence_is_downgraded(tmp_path: Path) -> None:
     """Breaks if a deterministic root cause survives without validated support."""
     invalid = _citation(excerpt="fabricated\n")
@@ -92,7 +128,7 @@ def test_report_without_valid_primary_evidence_is_downgraded(tmp_path: Path) -> 
         primary_hypothesis=Hypothesis(
             statement="The parser lacks validation.",
             confidence=0.9,
-            evidence=(invalid,),
+            evidence=(invalid.summary(),),
         ),
         evidence=(invalid,),
         implementation_steps=("Add validation.",),
@@ -121,10 +157,14 @@ def test_no_evidence_downgrade_replaces_all_model_authored_free_text(tmp_path: P
         observed_behavior=malicious,
         expected_behavior=malicious,
         primary_hypothesis=Hypothesis(
-            statement=malicious, confidence=0.9, evidence=(invalid,)
+            statement=malicious, confidence=0.9, evidence=(invalid.summary(),)
         ),
         alternative_hypotheses=(
-            Hypothesis(statement=malicious, confidence=0.8, evidence=(invalid,)),
+            Hypothesis(
+                statement=malicious,
+                confidence=0.8,
+                evidence=(invalid.summary(),),
+            ),
         ),
         evidence=(invalid,),
         impacted_files=(ImpactedFile(path="src/parser.py", explanation=malicious),),

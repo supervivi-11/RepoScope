@@ -4,17 +4,10 @@ import asyncio
 import logging
 from typing import Any
 
-from .failures import PublicFailure
+from .failures import ATTEMPTS_EXHAUSTED_FAILURE
 
 
 _LOG = logging.getLogger("reposcope.worker")
-_POISON_FAILURE = PublicFailure(
-    "attempts_exhausted",
-    "Analysis retry budget was exhausted.",
-    500,
-)
-
-
 class WorkerService:
     """Supervise durable claims without exposing exception or secret details."""
 
@@ -47,7 +40,7 @@ class WorkerService:
             return False
         if claim.attempt_count > self._max_attempts:
             await self._repository.fail_safe(
-                claim.analysis_id, _POISON_FAILURE, lease=claim
+                claim.analysis_id, ATTEMPTS_EXHAUSTED_FAILURE, lease=claim
             )
             _LOG.warning("worker_job_failed code=attempts_exhausted analysis_id=%s", claim.analysis_id)
             return True

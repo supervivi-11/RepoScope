@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -14,6 +14,7 @@ from app.agent import (
     IssueIdentity,
     build_analysis_state,
 )
+from app.agent.compatibility import load_persisted_analysis_state
 from langgraph.types import Command
 from app.ingestion import IngestionResult, IngestionService, RepositorySnapshot, SnapshotCleaner
 
@@ -30,7 +31,14 @@ from .repository import AnalysisRepository
 
 
 class GraphRunner(Protocol):
-    async def ainvoke(self, state: Any, *, config: dict[str, Any]) -> Any: ...
+    def astream(
+        self,
+        state: Any,
+        config: dict[str, Any] | None = None,
+        *,
+        stream_mode: str,
+        durability: str,
+    ) -> AsyncIterator[Any]: ...
 
 
 class AnalysisWorker:
@@ -216,15 +224,27 @@ class AnalysisWorker:
                 attempt_count=claim.attempt_count,
             ) as checkpoint:
                 graph = self._graph_builder(tools, checkpoint.checkpointer)
-                graph_input = (
-                    None
-                    if await _checkpoint_has_state(
-                        checkpoint.checkpointer, checkpoint.config
-                    )
-                    else initial_state
+                checkpoint_exists = await _checkpoint_has_state(
+                    checkpoint.checkpointer,
+                    checkpoint.config,
                 )
-                output = await graph.ainvoke(graph_input, config=checkpoint.config)
-            final_state = _analysis_state(output)
+                checkpoint_state = await _checkpoint_analysis_state(
+                    checkpoint.checkpointer,
+                    checkpoint.config,
+                )
+                final_state = await self._stream_graph(
+                    analysis_id,
+                    graph=graph,
+                    graph_input=None if checkpoint_exists else initial_state,
+                    config=checkpoint.config,
+                    claim=claim,
+                    previous_events=(),
+                    checkpoint_state=checkpoint_state,
+                    checkpoint_complete=lambda state: (
+                        state.status is AnalysisStatus.REVIEW_READY
+                        and state.report is not None
+                    ),
+                )
 
             if final_state.report is None:
                 raise RuntimeError("Investigation graph returned no report.")
@@ -277,7 +297,7 @@ class AnalysisWorker:
         snapshot: RepositorySnapshot | None = None
         try:
             snapshot = _restore_snapshot(stored.state)
-            previous_state = AnalysisState.model_validate(stored.state["graph"])
+            previous_state = load_persisted_analysis_state(stored.state["graph"])
             feedback = await self._repository.latest_feedback(analysis_id)
             if feedback.processed_at is not None:
                 raise RuntimeError("Feedback command was already processed.")
@@ -287,30 +307,29 @@ class AnalysisWorker:
                 analysis_id,
                 attempt_count=claim.attempt_count,
             ) as checkpoint:
-                if not await _checkpoint_has_state(
-                    checkpoint.checkpointer, checkpoint.config
-                ):
-                    raise RuntimeError("Revision checkpoint state is unavailable.")
                 graph = self._graph_builder(tools, checkpoint.checkpointer)
                 checkpoint_state = await _checkpoint_analysis_state(
                     checkpoint.checkpointer,
                     checkpoint.config,
                 )
-                if _is_applied_feedback_outcome(checkpoint_state, feedback):
-                    final_state = checkpoint_state
-                else:
-                    output = await graph.ainvoke(
-                        Command(
-                            resume={
-                                "action": feedback.action,
-                                "text": feedback.comment,
-                                "command_id": feedback.fingerprint,
-                            }
-                        ),
-                        config=checkpoint.config,
-                    )
-                    final_state = _analysis_state(output)
-            new_events = final_state.events[len(previous_state.events) :]
+                final_state = await self._stream_graph(
+                    analysis_id,
+                    graph=graph,
+                    graph_input=Command(
+                        resume={
+                            "action": feedback.action,
+                            "text": feedback.comment,
+                            "command_id": feedback.fingerprint,
+                        }
+                    ),
+                    config=checkpoint.config,
+                    claim=claim,
+                    previous_events=previous_state.events,
+                    checkpoint_state=checkpoint_state,
+                    checkpoint_complete=lambda state: (
+                        _is_applied_feedback_outcome(state, feedback)
+                    ),
+                )
             durable_state = {
                 "graph": final_state.model_dump(mode="json"),
                 "snapshot": _snapshot_state(snapshot),
@@ -331,7 +350,7 @@ class AnalysisWorker:
                                 mode="json", exclude={"sequence", "kind"}
                             ),
                         )
-                        for event in new_events
+                        for event in final_state.events
                     ),
                     lease=claim,
                 )
@@ -355,7 +374,7 @@ class AnalysisWorker:
                         event.kind,
                         event.model_dump(mode="json", exclude={"sequence", "kind"}),
                     )
-                    for event in new_events
+                    for event in final_state.events
                 ),
                 lease=claim,
                 result_key="revision:1",
@@ -394,6 +413,63 @@ class AnalysisWorker:
             lease=claim,
             dedupe_key=f"graph:{event.sequence}",
         )
+
+    async def _stream_graph(
+        self,
+        analysis_id: UUID,
+        *,
+        graph: GraphRunner,
+        graph_input: Any,
+        config: dict[str, Any],
+        claim: ClaimedAnalysis,
+        previous_events: tuple[AnalysisEvent, ...],
+        checkpoint_state: AnalysisState | None,
+        checkpoint_complete: Callable[[AnalysisState], bool],
+    ) -> AnalysisState:
+        seen = previous_events
+        final_state = checkpoint_state
+        if checkpoint_state is not None:
+            seen = await self._persist_stream_state(
+                analysis_id,
+                checkpoint_state,
+                claim,
+                previous_events=seen,
+            )
+            if checkpoint_complete(checkpoint_state):
+                return checkpoint_state
+
+        async for output in graph.astream(
+            graph_input,
+            config,
+            stream_mode="values",
+            durability="sync",
+        ):
+            state = _analysis_state(output)
+            seen = await self._persist_stream_state(
+                analysis_id,
+                state,
+                claim,
+                previous_events=seen,
+            )
+            final_state = state
+        if final_state is None:
+            raise RuntimeError("Investigation graph returned no state.")
+        return final_state
+
+    async def _persist_stream_state(
+        self,
+        analysis_id: UUID,
+        state: AnalysisState,
+        claim: ClaimedAnalysis,
+        *,
+        previous_events: tuple[AnalysisEvent, ...],
+    ) -> tuple[AnalysisEvent, ...]:
+        events = _append_only_events(state, previous_events)
+        for event in events[len(previous_events) :]:
+            if _is_boundary_event(event):
+                continue
+            await self._persist_graph_event(analysis_id, event, claim)
+        return events
 
 
 def _issue_identity(ingestion: IngestionResult) -> IssueIdentity:
@@ -458,12 +534,11 @@ def _restore_issue(state: dict[str, Any]) -> IssueIdentity:
 
 
 async def _checkpoint_has_state(
-    checkpointer: Any, config: dict[str, Any]
+    checkpointer: Any,
+    config: dict[str, Any],
 ) -> bool:
     getter = getattr(checkpointer, "aget_tuple", None)
-    if getter is None:
-        return False
-    return await getter(config) is not None
+    return getter is not None and await getter(config) is not None
 
 
 async def _checkpoint_analysis_state(
@@ -481,7 +556,10 @@ async def _checkpoint_analysis_state(
     if not isinstance(values, Mapping):
         return None
     try:
-        return _analysis_state(values)
+        fields = AnalysisState.model_fields
+        return load_persisted_analysis_state(
+            {key: value for key, value in values.items() if key in fields}
+        )
     except (TypeError, ValueError):
         return None
 
@@ -500,6 +578,29 @@ def _is_applied_feedback_outcome(
         and state.counters.user_revisions == 1
         and state.report is not None
     )
+
+
+_BOUNDARY_EVENT_STATUSES = frozenset(
+    {AnalysisStatus.REVIEW_READY, AnalysisStatus.COMPLETED, AnalysisStatus.FAILED}
+)
+
+
+def _is_boundary_event(event: AnalysisEvent) -> bool:
+    return event.status in _BOUNDARY_EVENT_STATUSES
+
+
+def _append_only_events(
+    state: AnalysisState,
+    previous_events: tuple[AnalysisEvent, ...],
+) -> tuple[AnalysisEvent, ...]:
+    events = state.events
+    if events[: len(previous_events)] != previous_events:
+        raise RuntimeError("Graph event stream rewrote previously observed events.")
+    expected = tuple(range(1, len(events) + 1))
+    actual = tuple(event.sequence for event in events)
+    if actual != expected:
+        raise RuntimeError("Graph event stream must be a contiguous append-only sequence.")
+    return events
 
 
 async def _cancel_and_await(task: asyncio.Task[Any]) -> None:

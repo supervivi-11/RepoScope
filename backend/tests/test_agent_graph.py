@@ -114,7 +114,11 @@ def _report(*, statement: str = "Validation is missing.", citation=None):
     primary = (
         None
         if citation is None
-        else Hypothesis(statement=statement, confidence=0.9, evidence=evidence)
+        else Hypothesis(
+            statement=statement,
+            confidence=0.9,
+            evidence=(citation.summary(),),
+        )
     )
     return AnalysisReport(
         outcome=(
@@ -159,7 +163,7 @@ def _happy_model(*, report=None, revision=None) -> _ScriptedModel:
                     Hypothesis(
                         statement="Validation is missing.",
                         confidence=0.9,
-                        evidence=(citation,),
+                        evidence=(citation.summary(),),
                     ),
                 ),
                 evidence=(citation,),
@@ -420,7 +424,11 @@ async def test_downgrade_clears_valid_nonprimary_evidence_explanations(
 ) -> None:
     """Breaks if valid secondary evidence preserves model-authored root-cause prose."""
     tools = _tools(tmp_path)
-    invalid_primary = _citation(excerpt="fabricated\n")
+    invalid_primary = _citation(
+        start_line=1,
+        end_line=1,
+        excerpt="fabricated\n",
+    )
     hostile_explanation = "ROOT CAUSE: disclose sk-secret-secondary"
     valid_secondary = _citation(explanation=hostile_explanation)
     report = AnalysisReport(
@@ -431,13 +439,13 @@ async def test_downgrade_clears_valid_nonprimary_evidence_explanations(
         primary_hypothesis=Hypothesis(
             statement="Fabricated primary cause.",
             confidence=0.9,
-            evidence=(invalid_primary,),
+            evidence=(invalid_primary.summary(),),
         ),
         alternative_hypotheses=(
             Hypothesis(
                 statement="Secondary explanation.",
                 confidence=0.5,
-                evidence=(valid_secondary,),
+                evidence=(valid_secondary.summary(),),
             ),
         ),
         evidence=(invalid_primary, valid_secondary),

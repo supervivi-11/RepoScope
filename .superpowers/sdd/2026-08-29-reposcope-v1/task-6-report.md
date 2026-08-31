@@ -149,3 +149,46 @@ No browser download was attempted because Task 6 explicitly permits recording th
 - Actual Chromium rendering, keyboard, mobile overflow, request interception, and live mocked browser flow remain unverified until the binary is installed.
 - Bundled cases intentionally remain `example/*` schema/product walkthrough placeholders and must be replaced by three truthful real historical exports in Task 7.
 - No public deployment, real GitHub/model request, live PostgreSQL service, or external asset was contacted in this task.
+
+### Review-fix round 3 — streaming evidence and bounded report contract
+
+Completed the interrupted final Task 6 hardening diff on top of `6cd0a3d`.
+
+Implemented:
+
+- Changed the worker from final-only `ainvoke` execution to LangGraph `astream(..., stream_mode="values", durability="sync")`, publishing non-boundary investigation events as soon as their checkpointed state is visible while retaining atomic report/status publication at `REVIEW_READY` and terminal boundaries.
+- Backfilled checkpointed events after recovery, enforced contiguous append-only graph event sequences, fenced stale attempts through the existing lease contract, and rejected a reused graph dedupe key when its type or sanitized payload diverges.
+- Replaced nested full citations in hypotheses with compact immutable location references resolved only against deterministically validated top-level evidence. Unresolved alternatives are removed and a primary hypothesis without validated evidence still downgrades to `insufficient_evidence`.
+- Added one Python source of truth for report/response limits, a checked-in generated TypeScript module, a 1 MiB serialized-report cap, a 3 MiB analysis-response cap, and at most one previous report in `report_history`; the latest report appears only as `current_report`.
+- Added line-preserving and idempotent credential redaction for LF, CRLF, and CR content, including cross-line authorization values, assignments, provider tokens, credential URLs, and private-key blocks. Reports are sanitized again at the persistence boundary after citation validation.
+- Made `attempts_exhausted` a canonical shared failure so storage, the failure event, and the GET API preserve the safe retry-budget result.
+- Updated worker fakes to the public streaming interface and retained the legacy/foreign-checkpoint recovery rule: any existing checkpoint resumes with `None` input even when its channel values cannot be parsed as `AnalysisState` for event backfill.
+
+Round-3 RED evidence:
+
+- Focused backend contract suite initially reported 5 failures: three stale full-citation fixtures, an unresolved alternative hypothesis, and duplicated latest report history.
+- Focused frontend contract suite initially reported 3 failures: old full-citation hypothesis decoding and the obsolete derived response-size cap.
+- New LF/CRLF/CR redaction regressions failed because the authorization expression consumed one original line delimiter.
+- The real repository/API retry-budget regression failed because `attempts_exhausted` was rewritten to `internal_error`.
+- Full backend regression exposed old `ainvoke` test doubles and a checkpoint-resume regression; both were updated/fixed against the streaming contract.
+
+Round-3 verification:
+
+- Focused report/stream/API backend suite: **50 passed**.
+- Focused worker lease/security/streaming suite: **21 passed**.
+- Full backend: `242 passed, 1 skipped` with warnings treated as errors. The existing skip is the Windows symlink-root case when symlink creation is unavailable.
+- Full frontend: `65 passed`, 11 files.
+- `npm run typecheck`: **PASS**.
+- `npm run test:build-config`: **PASS** (`build configuration isolation verified`).
+- `npm run build`: **PASS**, 78 modules, JS 274.97 kB / 84.34 kB gzip, CSS 18.25 kB / 4.74 kB gzip.
+- `npm run build:live`: **PASS**, 78 modules, JS 274.97 kB / 84.34 kB gzip, CSS 18.25 kB / 4.74 kB gzip.
+- `npx playwright test --list`: **PASS**, four Chromium scenarios listed. Browser execution remains subject to the previously recorded missing local Chromium binary.
+- `backend/scripts/generate_frontend_limits.py --check`: **PASS**.
+- Python `compileall`, `pip check`, and `git diff --check`: **PASS**.
+
+Final reviewer findings and resolution:
+
+- Fixed incomplete public-text redaction for quoted object keys, prefixed environment variables, AWS access-key IDs, and quoted values containing spaces. A shared backend/frontend corpus verifies the safe output, delimiter preservation, idempotence, and the `token_count` / `AuthorizationPolicy` false-positive boundaries.
+- Added a legacy persistence compatibility reader for pre-compact-reference report rows and LangGraph checkpoints. It recursively converts nested serializer-restored `BaseModel` values to plain data before strict validation, upgrades full hypothesis citations to summaries, and safely downgrades legacy reports that exceed the current bounded contract.
+- Added a real `build_checkpoint_serializer()` round-trip regression using the actual `channel_values` shape: a mapping containing an oversized `AnalysisReport.model_construct` value can no longer bypass validation.
+- Final focused rereview: both Important findings fixed; no new Critical or Important findings; reviewer verdict **Ready**.

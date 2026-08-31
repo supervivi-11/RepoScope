@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent import AnalysisReport
 from app.ingestion import RepositoryCoordinates, validate_issue_number
+from app.report_limits import PREVIOUS_REPORT_HISTORY_MAX
 
 from .analysis import (
     AnalysisConflictError,
@@ -115,7 +116,9 @@ class AnalysisResponse(ApiModel):
     updated_at: datetime
     error: PublicAnalysisError | None
     current_report: AnalysisReport | None
-    report_history: tuple[ReportVersionResponse, ...]
+    report_history: tuple[ReportVersionResponse, ...] = Field(
+        max_length=PREVIOUS_REPORT_HISTORY_MAX
+    )
 
 
 class FeedbackRequest(ApiModel):
@@ -406,7 +409,7 @@ def _analysis_response(stored: StoredAnalysis) -> AnalysisResponse:
                 report=item.report,
                 created_at=item.created_at,
             )
-            for item in stored.report_history
+            for item in stored.report_history[:-1]
         ),
     )
 

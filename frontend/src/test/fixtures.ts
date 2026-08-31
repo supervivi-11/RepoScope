@@ -14,8 +14,6 @@ export const validReport: AnalysisReport = {
         path: "src/parser.py",
         start_line: 14,
         end_line: 17,
-        excerpt: "if cursor >= end:\n    return None",
-        explanation: "The guard exits before consuming the terminal token.",
       },
     ],
   },

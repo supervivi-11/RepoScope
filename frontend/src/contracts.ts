@@ -1,3 +1,26 @@
+import {
+  ALTERNATIVE_HYPOTHESES_MAX,
+  ANALYSIS_RESPONSE_MAX_BYTES,
+  EVIDENCE_EXCERPT_MAX_BYTES,
+  EVIDENCE_EXCERPT_MAX_CHARS,
+  EVIDENCE_EXPLANATION_MAX_CHARS,
+  HYPOTHESIS_EVIDENCE_REFS_MAX,
+  HYPOTHESIS_STATEMENT_MAX_CHARS,
+  IMPACTED_FILES_MAX,
+  IMPACTED_FILE_EXPLANATION_MAX_CHARS,
+  IMPLEMENTATION_STEPS_MAX,
+  IMPLEMENTATION_STEP_MAX_CHARS,
+  PREVIOUS_REPORT_HISTORY_MAX,
+  PROPOSED_TESTS_MAX,
+  PROPOSED_TEST_DESCRIPTION_MAX_CHARS,
+  PROPOSED_TEST_NAME_MAX_CHARS,
+  REPORT_EVIDENCE_MAX,
+  REPORT_REQUIRED_TEXT_MAX_CHARS,
+  REPORT_SERIALIZED_MAX_BYTES,
+  UNCERTAINTIES_MAX,
+  UNCERTAINTY_MAX_CHARS,
+} from "./generated/limits";
+
 export const KNOWN_ANALYSIS_STATUSES = [
   "QUEUED",
   "INGESTING",
@@ -35,7 +58,7 @@ export interface EvidenceCitationSummary {
 export interface Hypothesis {
   statement: string;
   confidence: number;
-  evidence: EvidenceCitation[];
+  evidence: EvidenceCitationSummary[];
 }
 
 export interface ImpactedFile {
@@ -173,7 +196,7 @@ function string(value: unknown, maximum: number, pattern?: RegExp): string {
   if (
     typeof value !== "string" ||
     value.length === 0 ||
-    value.length > maximum ||
+    Array.from(value).length > maximum ||
     (pattern !== undefined && !pattern.test(value))
   ) {
     return fail();
@@ -181,20 +204,70 @@ function string(value: unknown, maximum: number, pattern?: RegExp): string {
   return value;
 }
 
-function redactPublicText(value: string): string {
-  return value
+function redactPublicLine(value: string): string {
+  const quotedAssignments = value.replace(
+    /(["']?)([A-Za-z0-9_-]+)\1([ \t]*[:=][ \t]*)(["'])(.*?)\4/gi,
+    (match, keyQuote: string, key: string, separator: string, valueQuote: string) =>
+      sensitiveTextKey(key)
+        ? `${keyQuote}${key}${keyQuote}${separator}${valueQuote}[已隐藏凭据]${valueQuote}`
+        : match,
+  );
+  return quotedAssignments
     .replace(/(https?:\/\/)[^/@\s:]+:[^@/\s]+@/gi, "$1[已隐藏凭据]@")
-    .replace(/\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[^\s,;]+/gi, "[已隐藏凭据]")
-    .replace(/\bBearer\s+[^\s,;]+/gi, "[已隐藏凭据]")
+    .replace(/\bAuthorization[ \t]*["']?[ \t]*[:=,][ \t]*["']?[ \t]*(?:Bearer|Basic)[ \t]+[^"',; \t)]+/gi, "[已隐藏凭据]")
+    .replace(/\b(?:Bearer|Basic)[ \t]+[^"',; \t)]+/gi, "[已隐藏凭据]")
+    .replace(
+      /(["']?)([A-Za-z0-9_-]+)\1([ \t]*[:=][ \t]*)([^"',; \t)]+)/gi,
+      (match, keyQuote: string, key: string, separator: string) =>
+        sensitiveTextKey(key)
+          ? `${keyQuote}${key}${keyQuote}${separator}[已隐藏凭据]`
+          : match,
+    )
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[已隐藏凭据]")
     .replace(/\bgh[pousr]_[A-Za-z0-9]{12,}\b/gi, "[已隐藏凭据]")
-    .replace(/\b[A-Za-z0-9_]*(?:api[_-]?key|token|password|secret)\s*[:=]\s*[^\s,;]+/gi, "[已隐藏凭据]")
+    .replace(/\bgithub_pat_[A-Za-z0-9_]+\b/gi, "[已隐藏凭据]")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
 }
 
-function nonblank(value: unknown, maximum: number): string {
+function sensitiveTextKey(key: string): boolean {
+  const folded = key.toLowerCase().replace(/[-_]+/g, "_").replace(/^_+|_+$/g, "");
+  return ["token", "password", "secret"].includes(folded)
+    || [
+      "_token",
+      "_password",
+      "_secret",
+      "_client_secret",
+      "_api_key",
+      "_access_key",
+      "_access_key_id",
+      "_private_key",
+    ].some((suffix) => folded.endsWith(suffix));
+}
+
+function redactPublicText(value: string): string {
+  const parts = value.split(/(\r\n|\n|\r)/);
+  let privateKey = false;
+  for (let index = 0; index < parts.length; index += 2) {
+    const line = parts[index];
+    if (/-----BEGIN [^-]*PRIVATE KEY-----/i.test(line)) {
+      privateKey = true;
+      parts[index] = "[已隐藏私钥]";
+    } else if (privateKey) {
+      parts[index] = "[已隐藏私钥]";
+      if (/-----END [^-]*PRIVATE KEY-----/i.test(line)) privateKey = false;
+    } else {
+      parts[index] = redactPublicLine(line);
+    }
+  }
+  return parts.join("");
+}
+
+function nonblank(value: unknown, maximum: number, maximumBytes?: number): string {
   const decoded = string(value, maximum);
-  if (decoded.trim().length === 0) {
+  if (
+    decoded.trim().length === 0 ||
+    (maximumBytes !== undefined && new TextEncoder().encode(decoded).byteLength > maximumBytes)
+  ) {
     fail();
   }
   return redactPublicText(decoded);
@@ -336,8 +409,8 @@ function decodeEvidence(value: unknown): EvidenceCitation {
   });
   return {
     ...summary,
-    excerpt: typeof record.excerpt === "string" && record.excerpt.length <= 50_000 ? redactPublicText(record.excerpt) : fail(),
-    explanation: nonblank(record.explanation, 4_000),
+    excerpt: nonblank(record.excerpt, EVIDENCE_EXCERPT_MAX_CHARS, EVIDENCE_EXCERPT_MAX_BYTES),
+    explanation: nonblank(record.explanation, EVIDENCE_EXPLANATION_MAX_CHARS),
   };
 }
 
@@ -345,25 +418,32 @@ function decodeHypothesis(value: unknown): Hypothesis {
   const record = object(value);
   exact(record, ["statement", "confidence", "evidence"]);
   return {
-    statement: nonblank(record.statement, 8_000),
+    statement: nonblank(record.statement, HYPOTHESIS_STATEMENT_MAX_CHARS),
     confidence: confidence(record.confidence),
-    evidence: array(record.evidence, 32, decodeEvidence),
+    evidence: array(record.evidence, HYPOTHESIS_EVIDENCE_REFS_MAX, decodeCitationSummary),
   };
 }
 
 function decodeImpactedFile(value: unknown): ImpactedFile {
   const record = object(value);
   exact(record, ["path", "explanation"]);
-  return { path: sourcePath(record.path), explanation: nonblank(record.explanation, 4_000) };
+  return {
+    path: sourcePath(record.path),
+    explanation: nonblank(record.explanation, IMPACTED_FILE_EXPLANATION_MAX_CHARS),
+  };
 }
 
 function decodeProposedTest(value: unknown): ProposedTest {
   const record = object(value);
   exact(record, ["name", "description"]);
-  return { name: nonblank(record.name, 4_000), description: nonblank(record.description, 4_000) };
+  return {
+    name: nonblank(record.name, PROPOSED_TEST_NAME_MAX_CHARS),
+    description: nonblank(record.description, PROPOSED_TEST_DESCRIPTION_MAX_CHARS),
+  };
 }
 
 export function decodeAnalysisReport(value: unknown): AnalysisReport {
+  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > REPORT_SERIALIZED_MAX_BYTES) return fail();
   const record = object(value);
   exact(record, [
     "outcome", "issue_summary", "observed_behavior", "expected_behavior",
@@ -373,16 +453,16 @@ export function decodeAnalysisReport(value: unknown): AnalysisReport {
   if (record.outcome !== "root_cause_identified" && record.outcome !== "insufficient_evidence") return fail();
   return {
     outcome: record.outcome,
-    issue_summary: nonblank(record.issue_summary, 10_000),
-    observed_behavior: nonblank(record.observed_behavior, 10_000),
-    expected_behavior: nonblank(record.expected_behavior, 10_000),
+    issue_summary: nonblank(record.issue_summary, REPORT_REQUIRED_TEXT_MAX_CHARS),
+    observed_behavior: nonblank(record.observed_behavior, REPORT_REQUIRED_TEXT_MAX_CHARS),
+    expected_behavior: nonblank(record.expected_behavior, REPORT_REQUIRED_TEXT_MAX_CHARS),
     primary_hypothesis: nullable(record.primary_hypothesis, decodeHypothesis),
-    alternative_hypotheses: array(record.alternative_hypotheses, 8, decodeHypothesis),
-    evidence: array(record.evidence, 64, decodeEvidence),
-    impacted_files: array(record.impacted_files, 32, decodeImpactedFile),
-    implementation_steps: array(record.implementation_steps, 32, (item) => nonblank(item, 4_000)),
-    proposed_tests: array(record.proposed_tests, 32, decodeProposedTest),
-    uncertainties: array(record.uncertainties, 32, (item) => nonblank(item, 4_000)),
+    alternative_hypotheses: array(record.alternative_hypotheses, ALTERNATIVE_HYPOTHESES_MAX, decodeHypothesis),
+    evidence: array(record.evidence, REPORT_EVIDENCE_MAX, decodeEvidence),
+    impacted_files: array(record.impacted_files, IMPACTED_FILES_MAX, decodeImpactedFile),
+    implementation_steps: array(record.implementation_steps, IMPLEMENTATION_STEPS_MAX, (item) => nonblank(item, IMPLEMENTATION_STEP_MAX_CHARS)),
+    proposed_tests: array(record.proposed_tests, PROPOSED_TESTS_MAX, decodeProposedTest),
+    uncertainties: array(record.uncertainties, UNCERTAINTIES_MAX, (item) => nonblank(item, UNCERTAINTY_MAX_CHARS)),
     confidence: confidence(record.confidence),
   };
 }
@@ -400,6 +480,7 @@ function decodeReportVersion(value: unknown): ReportVersion {
 }
 
 export function decodeAnalysisResponse(value: unknown): AnalysisResponse {
+  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > ANALYSIS_RESPONSE_MAX_BYTES) return fail();
   const record = object(value);
   exact(record, [
     "analysis_id", "repo_url", "issue_number", "status", "progress", "counters",
@@ -416,7 +497,7 @@ export function decodeAnalysisResponse(value: unknown): AnalysisResponse {
     updated_at: dateTime(record.updated_at),
     error: nullable(record.error, decodePublicError),
     current_report: nullable(record.current_report, decodeAnalysisReport),
-    report_history: array(record.report_history, 2, decodeReportVersion),
+    report_history: array(record.report_history, PREVIOUS_REPORT_HISTORY_MAX, decodeReportVersion),
   };
 }
 

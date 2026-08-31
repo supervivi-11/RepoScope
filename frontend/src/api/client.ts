@@ -9,6 +9,7 @@ import {
   type FeedbackResponse,
 } from "../contracts";
 import { configuredApiBaseUrl as buildApiBaseUrl } from "../config";
+import { ANALYSIS_RESPONSE_MAX_BYTES } from "../generated/limits";
 
 export interface CreateAnalysisInput {
   repo_url: string;
@@ -86,29 +87,7 @@ function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl}${path}`;
 }
 
-const MAX_UTF8_BYTES_PER_CONTRACT_CHAR = 4;
-const MAX_REPORTS_IN_ANALYSIS_RESPONSE = 3; // current_report plus the two report_history versions allowed by the decoder.
-const CITATION_TEXT_CHARS = 40 + 1_000 + 50_000 + 4_000 + 256;
-const HYPOTHESIS_TEXT_CHARS = 8_000 + 32 * CITATION_TEXT_CHARS + 512;
-const REPORT_TEXT_CHARS =
-  3 * 10_000
-  + HYPOTHESIS_TEXT_CHARS
-  + 8 * HYPOTHESIS_TEXT_CHARS
-  + 64 * CITATION_TEXT_CHARS
-  + 32 * (1_000 + 4_000 + 128)
-  + 32 * 4_000
-  + 32 * (4_000 + 4_000 + 128)
-  + 32 * 4_000
-  + 16_384;
-const ANALYSIS_METADATA_TEXT_CHARS = 300 + 2 * (128 * (100 + 10_000)) + 32_768;
-
-// Derived from the runtime decoder contract instead of a generic 1 MiB cap: the
-// analysis endpoint may legitimately return current_report and two historical
-// report versions, each with maximum evidence/hypothesis text. SSE frames keep
-// their own much smaller parser bound in sse.ts.
-export const ANALYSIS_JSON_RESPONSE_BYTE_LIMIT =
-  (MAX_REPORTS_IN_ANALYSIS_RESPONSE * REPORT_TEXT_CHARS + ANALYSIS_METADATA_TEXT_CHARS)
-  * MAX_UTF8_BYTES_PER_CONTRACT_CHAR;
+export const ANALYSIS_JSON_RESPONSE_BYTE_LIMIT = ANALYSIS_RESPONSE_MAX_BYTES;
 const SMALL_JSON_RESPONSE_BYTE_LIMIT = 64 * 1024;
 
 async function boundedResponseText(response: Response, byteLimit: number): Promise<string> {

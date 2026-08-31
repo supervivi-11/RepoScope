@@ -6,6 +6,26 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.report_limits import (
+    ALTERNATIVE_HYPOTHESES_MAX,
+    EVIDENCE_EXCERPT_MAX_BYTES,
+    EVIDENCE_EXCERPT_MAX_CHARS,
+    EVIDENCE_EXPLANATION_MAX_CHARS,
+    HYPOTHESIS_EVIDENCE_REFS_MAX,
+    HYPOTHESIS_STATEMENT_MAX_CHARS,
+    IMPACTED_FILES_MAX,
+    IMPACTED_FILE_EXPLANATION_MAX_CHARS,
+    IMPLEMENTATION_STEPS_MAX,
+    IMPLEMENTATION_STEP_MAX_CHARS,
+    PROPOSED_TESTS_MAX,
+    PROPOSED_TEST_DESCRIPTION_MAX_CHARS,
+    PROPOSED_TEST_NAME_MAX_CHARS,
+    REPORT_EVIDENCE_MAX,
+    REPORT_REQUIRED_TEXT_MAX_CHARS,
+    REPORT_SERIALIZED_MAX_BYTES,
+    UNCERTAINTIES_MAX,
+    UNCERTAINTY_MAX_CHARS,
+)
 from app.investigation.index import _normalize_relative_path
 
 
@@ -58,6 +78,12 @@ def _normalized_path(value: str) -> str:
     return _normalize_relative_path(value)
 
 
+def _utf8_bounded(value: str, *, label: str, maximum: int) -> str:
+    if len(value.encode("utf-8")) > maximum:
+        raise ValueError(f"{label} is too long")
+    return value
+
+
 class EvidenceCitation(FrozenModel):
     commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     path: str
@@ -74,7 +100,25 @@ class EvidenceCitation(FrozenModel):
     @field_validator("explanation")
     @classmethod
     def _validate_explanation(cls, value: str) -> str:
-        return _nonblank(value, label="explanation", maximum=4_000)
+        return _nonblank(
+            value,
+            label="explanation",
+            maximum=EVIDENCE_EXPLANATION_MAX_CHARS,
+        )
+
+    @field_validator("excerpt")
+    @classmethod
+    def _validate_excerpt(cls, value: str) -> str:
+        value = _nonblank(
+            value,
+            label="excerpt",
+            maximum=EVIDENCE_EXCERPT_MAX_CHARS,
+        )
+        return _utf8_bounded(
+            value,
+            label="excerpt",
+            maximum=EVIDENCE_EXCERPT_MAX_BYTES,
+        )
 
     @model_validator(mode="after")
     def _ordered_range(self) -> EvidenceCitation:
@@ -108,12 +152,19 @@ class EvidenceCitationSummary(FrozenModel):
 class Hypothesis(FrozenModel):
     statement: str
     confidence: float = Field(ge=0.0, le=1.0)
-    evidence: tuple[EvidenceCitation, ...] = Field(default=(), max_length=32)
+    evidence: tuple[EvidenceCitationSummary, ...] = Field(
+        default=(),
+        max_length=HYPOTHESIS_EVIDENCE_REFS_MAX,
+    )
 
     @field_validator("statement")
     @classmethod
     def _validate_statement(cls, value: str) -> str:
-        return _nonblank(value, label="hypothesis", maximum=8_000)
+        return _nonblank(
+            value,
+            label="hypothesis",
+            maximum=HYPOTHESIS_STATEMENT_MAX_CHARS,
+        )
 
 
 class ImpactedFile(FrozenModel):
@@ -128,17 +179,34 @@ class ImpactedFile(FrozenModel):
     @field_validator("explanation")
     @classmethod
     def _validate_explanation(cls, value: str) -> str:
-        return _nonblank(value, label="explanation", maximum=4_000)
+        return _nonblank(
+            value,
+            label="explanation",
+            maximum=IMPACTED_FILE_EXPLANATION_MAX_CHARS,
+        )
 
 
 class ProposedTest(FrozenModel):
     name: str
     description: str
 
-    @field_validator("name", "description")
+    @field_validator("name")
     @classmethod
-    def _validate_text(cls, value: str) -> str:
-        return _nonblank(value, label="test text", maximum=4_000)
+    def _validate_name(cls, value: str) -> str:
+        return _nonblank(
+            value,
+            label="test name",
+            maximum=PROPOSED_TEST_NAME_MAX_CHARS,
+        )
+
+    @field_validator("description")
+    @classmethod
+    def _validate_description(cls, value: str) -> str:
+        return _nonblank(
+            value,
+            label="test description",
+            maximum=PROPOSED_TEST_DESCRIPTION_MAX_CHARS,
+        )
 
 
 class AnalysisReport(FrozenModel):
@@ -147,12 +215,30 @@ class AnalysisReport(FrozenModel):
     observed_behavior: str
     expected_behavior: str
     primary_hypothesis: Hypothesis | None = None
-    alternative_hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=8)
-    evidence: tuple[EvidenceCitation, ...] = Field(default=(), max_length=64)
-    impacted_files: tuple[ImpactedFile, ...] = Field(default=(), max_length=32)
-    implementation_steps: tuple[str, ...] = Field(default=(), max_length=32)
-    proposed_tests: tuple[ProposedTest, ...] = Field(default=(), max_length=32)
-    uncertainties: tuple[str, ...] = Field(default=(), max_length=32)
+    alternative_hypotheses: tuple[Hypothesis, ...] = Field(
+        default=(),
+        max_length=ALTERNATIVE_HYPOTHESES_MAX,
+    )
+    evidence: tuple[EvidenceCitation, ...] = Field(
+        default=(),
+        max_length=REPORT_EVIDENCE_MAX,
+    )
+    impacted_files: tuple[ImpactedFile, ...] = Field(
+        default=(),
+        max_length=IMPACTED_FILES_MAX,
+    )
+    implementation_steps: tuple[str, ...] = Field(
+        default=(),
+        max_length=IMPLEMENTATION_STEPS_MAX,
+    )
+    proposed_tests: tuple[ProposedTest, ...] = Field(
+        default=(),
+        max_length=PROPOSED_TESTS_MAX,
+    )
+    uncertainties: tuple[str, ...] = Field(
+        default=(),
+        max_length=UNCERTAINTIES_MAX,
+    )
     confidence: float = Field(ge=0.0, le=1.0)
 
     @field_validator(
@@ -160,14 +246,39 @@ class AnalysisReport(FrozenModel):
     )
     @classmethod
     def _validate_required_text(cls, value: str) -> str:
-        return _nonblank(value, label="report text", maximum=10_000)
+        return _nonblank(
+            value,
+            label="report text",
+            maximum=REPORT_REQUIRED_TEXT_MAX_CHARS,
+        )
 
-    @field_validator("implementation_steps", "uncertainties")
+    @field_validator("implementation_steps")
     @classmethod
-    def _validate_string_tuple(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+    def _validate_steps(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         for item in value:
-            _nonblank(item, label="report item", maximum=4_000)
+            _nonblank(
+                item,
+                label="implementation step",
+                maximum=IMPLEMENTATION_STEP_MAX_CHARS,
+            )
         return value
+
+    @field_validator("uncertainties")
+    @classmethod
+    def _validate_uncertainties(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for item in value:
+            _nonblank(
+                item,
+                label="uncertainty",
+                maximum=UNCERTAINTY_MAX_CHARS,
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _validate_serialized_size(self) -> AnalysisReport:
+        if len(self.model_dump_json().encode("utf-8")) > REPORT_SERIALIZED_MAX_BYTES:
+            raise ValueError("serialized report is too large")
+        return self
 
 
 class IssueUnderstanding(FrozenModel):
