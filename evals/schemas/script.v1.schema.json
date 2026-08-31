@@ -1,0 +1,229 @@
+{
+  "$defs": {
+    "EvaluationUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "estimated_cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Cost Usd"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "model_attempts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Attempts"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "rate_card_version": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rate Card Version"
+        },
+        "tool_calls": {
+          "anyOf": [
+            {
+              "maximum": 12,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Calls"
+        }
+      },
+      "title": "EvaluationUsage",
+      "type": "object"
+    },
+    "EvidenceCitation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "end_line": {
+          "minimum": 1,
+          "title": "End Line",
+          "type": "integer"
+        },
+        "excerpt": {
+          "title": "Excerpt",
+          "type": "string"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "start_line": {
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commit_sha",
+        "path",
+        "start_line",
+        "end_line",
+        "excerpt",
+        "explanation"
+      ],
+      "title": "EvidenceCitation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "citations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvidenceCitation"
+      },
+      "maxItems": 64,
+      "title": "Citations",
+      "type": "array"
+    },
+    "model_id": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Id"
+    },
+    "predicted_files": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 20,
+      "title": "Predicted Files",
+      "type": "array"
+    },
+    "report_outcome": {
+      "anyOf": [
+        {
+          "enum": [
+            "root_cause_identified",
+            "insufficient_evidence"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Report Outcome"
+    },
+    "schema_version": {
+      "const": "reposcope.eval.script.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "system": {
+      "enum": [
+        "issue_only",
+        "reposcope"
+      ],
+      "title": "System",
+      "type": "string"
+    },
+    "usage": {
+      "$ref": "#/$defs/EvaluationUsage"
+    }
+  },
+  "required": [
+    "schema_version",
+    "case_id",
+    "system"
+  ],
+  "title": "ScriptedPrediction",
+  "type": "object"
+}

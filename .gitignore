@@ -12,6 +12,7 @@ coverage/
 .coverage
 playwright-report/
 test-results/
+/local/
 *.pyc
 *.pyo
 *.sqlite3

@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "reposcope.eval.slot.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "slot_id": {
+      "pattern": "^(dev|hidden)-0[1-6]$",
+      "title": "Slot Id",
+      "type": "string"
+    },
+    "split": {
+      "enum": [
+        "development",
+        "hidden"
+      ],
+      "title": "Split",
+      "type": "string"
+    },
+    "state": {
+      "const": "unfilled",
+      "default": "unfilled",
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "slot_id",
+    "split"
+  ],
+  "title": "BenchmarkSlot",
+  "type": "object"
+}

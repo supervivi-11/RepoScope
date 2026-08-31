@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from .failures import ATTEMPTS_EXHAUSTED_FAILURE
+from app.telemetry import StructuredTelemetry
 
 
 _LOG = logging.getLogger("reposcope.worker")
@@ -21,6 +22,7 @@ class WorkerService:
         max_attempts: int = 3,
         idle_delay: float = 0.25,
         max_backoff: float = 5.0,
+        telemetry: StructuredTelemetry | None = None,
     ) -> None:
         if not worker_id.strip():
             raise ValueError("worker ID must be nonblank")
@@ -33,18 +35,52 @@ class WorkerService:
         self._max_attempts = max_attempts
         self._idle_delay = idle_delay
         self._max_backoff = max_backoff
+        self._telemetry = telemetry or StructuredTelemetry(service="worker")
 
     async def run_once(self) -> bool:
         claim = await self._queue.claim_next(worker_id=self._worker_id)
         if claim is None:
             return False
+        started = self._telemetry.start()
         if claim.attempt_count > self._max_attempts:
             await self._repository.fail_safe(
                 claim.analysis_id, ATTEMPTS_EXHAUSTED_FAILURE, lease=claim
             )
             _LOG.warning("worker_job_failed code=attempts_exhausted analysis_id=%s", claim.analysis_id)
+            self._telemetry.emit(
+                "analysis_attempt_finished",
+                started_at=started,
+                analysis_id=str(claim.analysis_id),
+                status="FAILED",
+                error_code="attempts_exhausted",
+            )
             return True
-        await self._worker.run(claim)
+        try:
+            result = await self._worker.run(claim)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._telemetry.emit(
+                "analysis_attempt_finished",
+                started_at=started,
+                analysis_id=str(claim.analysis_id),
+                status="FAILED",
+                error_code="internal_error",
+            )
+            raise
+        counters = result.counters if isinstance(result.counters, dict) else {}
+        raw_status = getattr(result, "status", None)
+        status_value = getattr(raw_status, "value", raw_status)
+        status = status_value if isinstance(status_value, str) else "UNKNOWN"
+        self._telemetry.emit(
+            "analysis_attempt_finished",
+            started_at=started,
+            analysis_id=str(claim.analysis_id),
+            status=status,
+            error_code=getattr(result, "error_code", None),
+            tool_calls=counters.get("tool_calls"),
+            model_attempts=counters.get("model_attempts"),
+        )
         return True
 
     async def run_forever(self, stop: asyncio.Event) -> None:

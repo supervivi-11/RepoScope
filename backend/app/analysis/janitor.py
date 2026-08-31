@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.snapshot_paths import validate_snapshot_root
+from app.telemetry import StructuredTelemetry
 
 
 class SnapshotJanitor:
@@ -19,6 +20,7 @@ class SnapshotJanitor:
         repository: Any,
         retention: timedelta = timedelta(hours=24),
         interval: float = 60 * 60,
+        telemetry: StructuredTelemetry | None = None,
     ) -> None:
         if retention <= timedelta(0) or interval <= 0:
             raise ValueError("janitor limits must be positive")
@@ -26,14 +28,22 @@ class SnapshotJanitor:
         self._repository = repository
         self._retention = retention
         self._interval = interval
+        self._telemetry = telemetry or StructuredTelemetry(service="worker")
 
     async def run_once(self, *, now: datetime | None = None) -> int:
+        started = self._telemetry.start()
         active = {
             Path(path).resolve()
             for path in await self._repository.active_snapshot_paths()
         }
         timestamp = now or datetime.now(UTC)
-        return await asyncio.to_thread(self._cleanup, active, timestamp)
+        removed = await asyncio.to_thread(self._cleanup, active, timestamp)
+        self._telemetry.emit(
+            "snapshot_cleanup_finished",
+            started_at=started,
+            removed_count=removed,
+        )
+        return removed
 
     def _cleanup(self, active: set[Path], now: datetime) -> int:
         if not self._root.exists() or self._root.is_symlink():
