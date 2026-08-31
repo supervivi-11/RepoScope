@@ -1,8 +1,10 @@
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.snapshot_paths import validate_snapshot_root
 
 
 class Settings(BaseSettings):
@@ -18,3 +20,8 @@ class Settings(BaseSettings):
     worker_id: str = f"worker-{uuid4()}"
     worker_max_attempts: int = 3
     snapshot_janitor_interval_seconds: float = 3600
+
+    @field_validator("snapshot_root", mode="before")
+    @classmethod
+    def _validate_snapshot_root(cls, value: object) -> Path:
+        return validate_snapshot_root(value)

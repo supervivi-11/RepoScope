@@ -102,12 +102,19 @@ class OpenAIModelSettings(BaseSettings):
     base_url: str | None = None
     model: str = "gpt-5-mini"
 
-    @field_validator("base_url")
+    @field_validator("base_url", mode="before")
     @classmethod
-    def _validate_base_url(cls, value: str | None) -> str | None:
-        if value is not None and not value.startswith(("https://", "http://")):
+    def _validate_base_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
             raise ValueError("base_url must be HTTP(S)")
-        return value
+        normalized = value.strip()
+        if normalized == "":
+            return None
+        if not normalized.startswith(("https://", "http://")):
+            raise ValueError("base_url must be HTTP(S)")
+        return normalized
 
 
 class OpenAICompatibleGateway:

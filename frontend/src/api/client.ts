@@ -86,11 +86,34 @@ function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl}${path}`;
 }
 
-const MAX_JSON_RESPONSE_BYTES = 1024 * 1024;
+const MAX_UTF8_BYTES_PER_CONTRACT_CHAR = 4;
+const MAX_REPORTS_IN_ANALYSIS_RESPONSE = 3; // current_report plus the two report_history versions allowed by the decoder.
+const CITATION_TEXT_CHARS = 40 + 1_000 + 50_000 + 4_000 + 256;
+const HYPOTHESIS_TEXT_CHARS = 8_000 + 32 * CITATION_TEXT_CHARS + 512;
+const REPORT_TEXT_CHARS =
+  3 * 10_000
+  + HYPOTHESIS_TEXT_CHARS
+  + 8 * HYPOTHESIS_TEXT_CHARS
+  + 64 * CITATION_TEXT_CHARS
+  + 32 * (1_000 + 4_000 + 128)
+  + 32 * 4_000
+  + 32 * (4_000 + 4_000 + 128)
+  + 32 * 4_000
+  + 16_384;
+const ANALYSIS_METADATA_TEXT_CHARS = 300 + 2 * (128 * (100 + 10_000)) + 32_768;
 
-async function boundedResponseText(response: Response): Promise<string> {
+// Derived from the runtime decoder contract instead of a generic 1 MiB cap: the
+// analysis endpoint may legitimately return current_report and two historical
+// report versions, each with maximum evidence/hypothesis text. SSE frames keep
+// their own much smaller parser bound in sse.ts.
+export const ANALYSIS_JSON_RESPONSE_BYTE_LIMIT =
+  (MAX_REPORTS_IN_ANALYSIS_RESPONSE * REPORT_TEXT_CHARS + ANALYSIS_METADATA_TEXT_CHARS)
+  * MAX_UTF8_BYTES_PER_CONTRACT_CHAR;
+const SMALL_JSON_RESPONSE_BYTE_LIMIT = 64 * 1024;
+
+async function boundedResponseText(response: Response, byteLimit: number): Promise<string> {
   const declared = response.headers.get("Content-Length");
-  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_JSON_RESPONSE_BYTES)) {
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > byteLimit)) {
     throw new ApiError("invalid_response", "服务器返回了无法安全读取的数据。", response.status);
   }
   if (response.body === null) return "";
@@ -103,7 +126,7 @@ async function boundedResponseText(response: Response): Promise<string> {
       const { done, value } = await reader.read();
       if (done) return text + decoder.decode();
       received += value.byteLength;
-      if (received > MAX_JSON_RESPONSE_BYTES) {
+      if (received > byteLimit) {
         await reader.cancel();
         throw new ApiError("invalid_response", "服务器返回了无法安全读取的数据。", response.status);
       }
@@ -114,9 +137,9 @@ async function boundedResponseText(response: Response): Promise<string> {
   }
 }
 
-async function parseJson(response: Response): Promise<unknown> {
+async function parseJson(response: Response, byteLimit: number): Promise<unknown> {
   try {
-    const text = await boundedResponseText(response);
+    const text = await boundedResponseText(response, byteLimit);
     return JSON.parse(text) as unknown;
   } catch (error) {
     if (error instanceof ApiError) throw error;
@@ -125,7 +148,7 @@ async function parseJson(response: Response): Promise<unknown> {
 }
 
 async function safeFailure(response: Response): Promise<never> {
-  const payload = await parseJson(response);
+  const payload = await parseJson(response, SMALL_JSON_RESPONSE_BYTE_LIMIT);
   try {
     const error = decodeErrorResponse(payload);
     throw new ApiError(
@@ -144,6 +167,7 @@ async function request<T>(
   url: string,
   init: RequestInit,
   decode: (value: unknown) => T,
+  byteLimit: number,
 ): Promise<T> {
   let response: Response;
   try {
@@ -152,7 +176,7 @@ async function request<T>(
     throw new ApiError("unavailable", "无法连接本地分析服务，请确认服务已启动。");
   }
   if (!response.ok) return safeFailure(response);
-  const payload = await parseJson(response);
+  const payload = await parseJson(response, byteLimit);
   try {
     return decode(payload);
   } catch (error) {
@@ -182,6 +206,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
           credentials: "same-origin",
         },
         decodeCreateAnalysisResponse,
+        SMALL_JSON_RESPONSE_BYTE_LIMIT,
       );
     },
     async getAnalysis(analysisId) {
@@ -190,6 +215,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         endpoint(baseUrl, `/api/v1/analyses/${encodeURIComponent(analysisId)}`),
         { method: "GET", headers: { Accept: "application/json" }, credentials: "same-origin" },
         decodeAnalysisResponse,
+        ANALYSIS_JSON_RESPONSE_BYTE_LIMIT,
       );
       if (result.analysis_id !== analysisId) throw new ApiError("invalid_response", "服务器返回了无法安全读取的数据。");
       return result;
@@ -205,6 +231,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
           credentials: "same-origin",
         },
         decodeFeedbackResponse,
+        SMALL_JSON_RESPONSE_BYTE_LIMIT,
       );
       if (result.analysis_id !== analysisId) throw new ApiError("invalid_response", "服务器返回了无法安全读取的数据。");
       return result;

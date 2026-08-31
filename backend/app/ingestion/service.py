@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.snapshot_paths import validate_snapshot_root
+
 from .archive import SafeArchiveExtractor
 from .domain import (
     CommitMetadata,
@@ -45,7 +47,7 @@ class IngestionService:
     ) -> None:
         self._github = github
         self._extractor = extractor
-        self._snapshot_root = snapshot_root.resolve()
+        self._snapshot_root = validate_snapshot_root(snapshot_root)
         self._clock = clock or (lambda: datetime.now(UTC))
 
     @classmethod
@@ -139,7 +141,7 @@ class SnapshotCleaner:
     """Delete expired snapshot directories only beneath one configured root."""
 
     def __init__(self, snapshot_root: Path) -> None:
-        self._snapshot_root = snapshot_root.resolve()
+        self._snapshot_root = validate_snapshot_root(snapshot_root)
 
     def cleanup_expired(
         self,

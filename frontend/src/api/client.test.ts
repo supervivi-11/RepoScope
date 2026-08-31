@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import { validAnalysisResponse } from "../test/fixtures";
+import { validAnalysisResponse, validReport } from "../test/fixtures";
 
 describe("RepoScope API client", () => {
   test("accepts both new and idempotently replayed create responses without putting keys in URLs", async () => {
@@ -64,6 +64,50 @@ describe("RepoScope API client", () => {
     expect(fetcher.mock.calls[0][0]).toBe(`/api/v1/analyses/${validAnalysisResponse.analysis_id}`);
     expect(fetcher.mock.calls[1][0]).toContain(`${validAnalysisResponse.analysis_id}/feedback`);
     expect(feedback.status).toBe("REVISING");
+  });
+
+  test("accepts a schema-valid completed report above the old 1 MiB response cap", async () => {
+    const { createApiClient } = await import("./client");
+    const evidence = Array.from({ length: 23 }, (_, index) => ({
+      ...validReport.evidence[0],
+      path: `src/large-${index}.py`,
+      start_line: 1,
+      end_line: 1,
+      excerpt: `${index}\n${"x".repeat(49_990)}`.slice(0, 50_000),
+      explanation: "Large but contract-valid evidence excerpt.",
+    }));
+    const report = {
+      ...validReport,
+      evidence,
+      primary_hypothesis: validReport.primary_hypothesis === null
+        ? null
+        : { ...validReport.primary_hypothesis, evidence: evidence.slice(0, 1) },
+    };
+    const completedResponse = {
+      ...validAnalysisResponse,
+      status: "COMPLETED",
+      current_report: report,
+      report_history: [
+        { version: 1, report, created_at: "2026-08-30T08:02:00Z" },
+        { version: 2, report, created_at: "2026-08-30T08:03:00Z" },
+      ],
+    };
+    const body = JSON.stringify(completedResponse);
+    const client = createApiClient({
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "application/json", "Content-Length": String(body.length) },
+        }),
+      ),
+    });
+
+    expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(1024 * 1024);
+    const result = await client.getAnalysis(validAnalysisResponse.analysis_id);
+
+    expect(result.status).toBe("COMPLETED");
+    expect(result.current_report?.evidence).toHaveLength(evidence.length);
+    expect(result.report_history).toHaveLength(2);
   });
 
   test("turns incompatible or secret-bearing failures into fixed safe UI errors", async () => {
@@ -141,11 +185,16 @@ describe("RepoScope API client", () => {
     await expect(client.submitFeedback(validAnalysisResponse.analysis_id, { action: "accept" })).rejects.toMatchObject({ code: "invalid_response" });
   });
 
-  test.each([true, false])("bounds oversized JSON before parsing (declared=%s)", async (declared) => {
-    const { createApiClient } = await import("./client");
-    const body = JSON.stringify({ padding: "x".repeat(1_100_000) });
-    const headers = declared ? { "Content-Length": String(body.length) } : undefined;
-    const client = createApiClient({ fetch: vi.fn().mockResolvedValue(new Response(body, { status: 200, headers })) });
+  test("rejects analysis JSON whose declared size exceeds the derived schema bound", async () => {
+    const { ANALYSIS_JSON_RESPONSE_BYTE_LIMIT, createApiClient } = await import("./client");
+    const client = createApiClient({
+      fetch: vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(validAnalysisResponse), {
+          status: 200,
+          headers: { "Content-Length": String(ANALYSIS_JSON_RESPONSE_BYTE_LIMIT + 1) },
+        }),
+      ),
+    });
 
     await expect(client.getAnalysis(validAnalysisResponse.analysis_id)).rejects.toMatchObject({ code: "invalid_response" });
   });

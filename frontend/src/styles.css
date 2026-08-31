@@ -115,7 +115,7 @@ input, textarea {
 }
 input { min-height: 50px; padding: 0 0.9rem; }
 textarea { min-height: 128px; padding: 0.85rem; resize: vertical; }
-input::placeholder, textarea::placeholder { color: #5d6c65; }
+input::placeholder, textarea::placeholder { color: #8da098; }
 input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--red); }
 .field-error { color: var(--red); font-size: 0.82rem; }
 .field-meta { display: flex; justify-content: space-between; color: var(--faint); font: 0.72rem var(--mono); }

@@ -39,6 +39,48 @@ Fresh review-fix verification:
 
 Generated verification artifacts `frontend/dist`, `frontend/test-results`, and `frontend/playwright-report` were removed after the scan. `node_modules` remains ignored and was not modified as a deliverable.
 
+### Review-fix round 2 — runtime supervision and cleanup hardening
+
+Addressed the concrete rereview findings on top of clean `1b2ab47` without subagents or external live calls.
+
+Implemented fixes:
+
+- Normalized blank `REPOSCOPE_OPENAI_BASE_URL` to `None` at the OpenAI-compatible model settings boundary so the Compose default uses the provider default; nonblank non-HTTP(S) values still fail validation without logging secrets.
+- Added a shared snapshot root validator used by settings, janitor, ingestion materialization, and snapshot cleaner. It rejects empty/current paths, filesystem/drive roots, paths directly under a filesystem root, user home, detected repo/workspace roots, symlink roots, and non-dedicated leaves; janitor deletion still only removes expired inactive direct directories whose resolved paths remain under the configured snapshot root.
+- Reworked `worker_main` into a supervisor: graceful signal returns exit code 0 after both managed tasks stop and resources close once; unexpected worker/janitor error or cancellation stops the peer, awaits cleanup, closes once, and returns exit code 1 for Compose restart. Logs include only the failed component name.
+- Replaced the generic 1 MiB API JSON response limit with endpoint-specific caps. `getAnalysis` now uses a finite limit derived from the decoder’s maximum current report plus two report-history versions and analysis metadata; small create/feedback/error responses keep a small 64 KiB cap. SSE remains bounded separately in `sse.ts`.
+- Replaced the low-contrast placeholder color `#5d6c65` with `#8da098` and added deterministic WCAG-AA contrast coverage for normal-size muted/faint/error/placeholder text pairs.
+
+Round-2 RED evidence:
+
+- `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_runtime_service.py`: 11 failed, 4 passed, 1 skipped. Failures matched blank OpenAI base validation, missing worker-main supervision injection/exit behavior, and broad snapshot roots being accepted.
+- `npm test -- --run src/api/client.test.ts src/App.test.tsx`: 2 failed, 22 passed. Failures matched the old 1 MiB analysis response cap and placeholder contrast ratio 3.43:1.
+
+Round-2 GREEN/focused verification:
+
+- `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_runtime_service.py`: 15 passed, 1 skipped. The skip is the symlink-root regression when this Windows environment cannot create a test symlink.
+- `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_runtime_service.py backend\tests\test_ingestion_service.py`: 23 passed, 1 skipped.
+- Reviewer-original focused backend diagnostics: `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_runtime_service.py backend\tests\test_analysis_persistence.py backend\tests\test_analysis_queue_checkpoints.py backend\tests\test_agent_tool_dispatch.py backend\tests\test_health.py backend\tests\test_analysis_worker_leases.py backend\tests\test_analysis_worker_security.py backend\tests\test_ingestion_service.py backend\tests\test_investigation_tools.py backend\tests\test_safe_archive.py`: 93 passed, 1 skipped.
+- Reviewer-original focused frontend diagnostics: `npm test -- --run src/api/client.test.ts src/api/sse.test.ts src/views/LiveWorkspace.test.tsx src/router.test.ts src/components/ReportView.test.tsx src/components/FeedbackControls.test.tsx src/App.test.tsx`: 45 passed, 7 files.
+
+Round-2 full verification:
+
+- `npm test`: 61 passed, 11 files.
+- `npm run typecheck`: PASS; `tsconfig.json` includes `src`, `e2e`, `vite.config.ts`, and `playwright.config.ts`.
+- `npm run test:build-config`: PASS, `build configuration isolation verified`.
+- `npm run build`: PASS, production static build, 77 modules, JS 274.27 kB / 84.08 kB gzip, CSS 18.25 kB / 4.74 kB gzip.
+- Static bundle scan: PASS for OpenAI/GitHub/token sentinel strings and build-config secret marker.
+- `npm run build:live`: PASS, explicit live build, 77 modules, JS 274.27 kB / 84.08 kB gzip, CSS 18.25 kB / 4.74 kB gzip.
+- Live bundle scan: PASS for OpenAI/GitHub/token sentinel strings and build-config secret marker.
+- `npx playwright test --list`: PASS, four Chromium specs listed.
+- `.\.venv\Scripts\python.exe -m pytest -W error -q`: 226 passed, 1 skipped.
+- `.\.venv\Scripts\python.exe -m compileall -q backend`: PASS.
+- `.\.venv\Scripts\python.exe -m pip check`: PASS, no broken requirements.
+- `..\.venv\Scripts\alembic.exe upgrade head --sql` from `backend`: PASS, generated offline PostgreSQL DDL ending at `20260830_0001`.
+- `docker compose config --quiet` with isolated `DOCKER_CONFIG`: PASS.
+
+Limitations still not claimed as verified: no real GitHub/model/OpenAI calls, no live PostgreSQL/Docker daemon startup, and no Chromium browser execution beyond Playwright test discovery.
+
 ### TDD evidence
 
 - Baseline RED: `npm test -- --reporter=dot` collected `e2e/workspace.spec.ts` as Vitest and failed while the existing 26 unit tests passed.

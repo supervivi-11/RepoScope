@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from app.snapshot_paths import validate_snapshot_root
+
 
 class SnapshotJanitor:
     """Delete only expired, inactive directories under one dedicated root."""
@@ -20,7 +22,7 @@ class SnapshotJanitor:
     ) -> None:
         if retention <= timedelta(0) or interval <= 0:
             raise ValueError("janitor limits must be positive")
-        self._root = root.resolve()
+        self._root = validate_snapshot_root(root)
         self._repository = repository
         self._retention = retention
         self._interval = interval
@@ -40,13 +42,18 @@ class SnapshotJanitor:
         for candidate in self._root.iterdir():
             if candidate.is_symlink() or not candidate.is_dir():
                 continue
-            resolved = candidate.resolve()
-            if resolved.parent != self._root or resolved in active:
+            resolved = candidate.resolve(strict=False)
+            if (
+                resolved == self._root
+                or not resolved.is_relative_to(self._root)
+                or resolved.parent != self._root
+                or resolved in active
+            ):
                 continue
             modified = datetime.fromtimestamp(candidate.stat().st_mtime, UTC)
             if now - modified < self._retention:
                 continue
-            shutil.rmtree(resolved)
+            shutil.rmtree(candidate)
             removed += 1
         return removed
 

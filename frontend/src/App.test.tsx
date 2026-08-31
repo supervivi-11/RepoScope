@@ -5,6 +5,36 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import App from "./App";
 import { createApiClient } from "./api/client";
 
+function hexToRgb(hex: string): [number, number, number] {
+  const normalized = hex.replace("#", "");
+  return [
+    Number.parseInt(normalized.slice(0, 2), 16),
+    Number.parseInt(normalized.slice(2, 4), 16),
+    Number.parseInt(normalized.slice(4, 6), 16),
+  ];
+}
+
+function luminance(hex: string): number {
+  const channels = hexToRgb(hex).map((channel) => {
+    const value = channel / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const lighter = Math.max(luminance(foreground), luminance(background));
+  const darker = Math.min(luminance(foreground), luminance(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function cssColorVar(styles: string, name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = styles.match(new RegExp(`--${escaped}:\\s*(#[0-9a-f]{6});`, "i"));
+  if (match === null) throw new Error(`Missing color variable ${name}`);
+  return match[1];
+}
+
 afterEach(() => {
   window.location.hash = "";
   vi.useRealTimers();
@@ -175,5 +205,40 @@ describe("RepoScope investigation entry", () => {
     const letterSpacingValues = [...styles.matchAll(/letter-spacing:\s*([^;]+);/g)].map((match) => match[1].trim());
 
     expect(letterSpacingValues).toEqual(letterSpacingValues.map(() => "0"));
+  });
+
+  test("keeps normal-size text and placeholders above WCAG AA contrast", () => {
+    const styles = readFileSync("src/styles.css", "utf8");
+    const placeholder = styles.match(/input::placeholder,\s*textarea::placeholder\s*\{\s*color:\s*(#[0-9a-f]{6});\s*\}/i);
+    if (placeholder === null) throw new Error("Missing placeholder color declaration");
+    const palette = {
+      canvas: cssColorVar(styles, "canvas"),
+      surface: cssColorVar(styles, "surface"),
+      surface2: cssColorVar(styles, "surface-2"),
+      muted: cssColorVar(styles, "muted"),
+      faint: cssColorVar(styles, "faint"),
+      red: cssColorVar(styles, "red"),
+      placeholder: placeholder[1],
+    };
+
+    const checkedPairs = [
+      ["placeholder on input", palette.placeholder, "#0b1210"],
+      ["muted on canvas", palette.muted, palette.canvas],
+      ["muted on surface", palette.muted, palette.surface],
+      ["muted on surface-2", palette.muted, palette.surface2],
+      ["faint on canvas", palette.faint, palette.canvas],
+      ["faint on surface", palette.faint, palette.surface],
+      ["faint on surface-2", palette.faint, palette.surface2],
+      ["error text on canvas", palette.red, palette.canvas],
+    ] as const;
+
+    const failures = checkedPairs
+      .map(([label, foreground, background]) => ({
+        label,
+        ratio: contrastRatio(foreground, background),
+      }))
+      .filter(({ ratio }) => ratio < 4.5);
+
+    expect(failures).toEqual([]);
   });
 });
