@@ -3,6 +3,16 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+const playwrightConfig = readFileSync(resolve("playwright.config.ts"), "utf8");
+const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+
+if (/\bwebServer\s*:/.test(playwrightConfig)) {
+  throw new Error("Playwright server lifecycle must be owned by the E2E runner so teardown is reliable on Windows.");
+}
+if (!packageJson.scripts?.["test:e2e:live"]?.includes("build:live") || !packageJson.scripts?.["test:e2e:static"]?.includes("npm run build")) {
+  throw new Error("Live and static E2E commands must build their matching bundles before Playwright starts.");
+}
+
 const marker = "STATIC_CREDENTIAL_MARKER_7f91";
 const root = mkdtempSync(join(tmpdir(), "reposcope-build-config-"));
 const vite = resolve("node_modules/vite/bin/vite.js");

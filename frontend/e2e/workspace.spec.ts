@@ -17,8 +17,6 @@ const report = {
         path: "src/parser.py",
         start_line: 14,
         end_line: 17,
-        excerpt: "if cursor >= end:\n    return None",
-        explanation: "The guard exits before consuming the terminal token.",
       },
     ],
   },
@@ -64,7 +62,7 @@ async function rejectUnexpectedExternalTraffic(page: Page) {
   });
 }
 
-test("landing → bundled demo → ordered playback → report uses zero API requests", async ({ page }) => {
+test("@static landing → bundled demo → ordered playback → report uses zero API requests", async ({ page }) => {
   const apiRequests: string[] = [];
   page.on("request", (request) => {
     if (request.url().includes("/api/") || request.url().includes("github.com")) apiRequests.push(request.url());
@@ -78,11 +76,11 @@ test("landing → bundled demo → ordered playback → report uses zero API req
   await expect(page.getByText("架构与产品流程占位演练，不是真实基准结果。")).toBeVisible();
   await page.getByRole("button", { name: "播放" }).click();
   await expect(page.getByRole("heading", { name: "调查报告" })).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByText("证据不足")).toBeVisible();
+  await expect(page.getByText("证据不足", { exact: true })).toBeVisible();
   expect(apiRequests).toEqual([]);
 });
 
-test("local form → mocked 202 → SSE reconnect → review report → accept", async ({ page }) => {
+test("@live local form → mocked 202 → SSE reconnect → review report → accept", async ({ page }) => {
   let analysisReads = 0;
   let streamReads = 0;
   let accepted = false;
@@ -135,13 +133,13 @@ test("local form → mocked 202 → SSE reconnect → review report → accept",
 
   await expect(page).toHaveURL(new RegExp(`#analysis/${analysisId}$`));
   await expect(page.getByRole("heading", { name: "调查报告" })).toBeVisible({ timeout: 8_000 });
-  expect(reconnectHeaders).toContain("1");
+  await expect.poll(() => reconnectHeaders).toContain("1");
   await page.getByRole("button", { name: "接受报告" }).click();
   await page.getByRole("button", { name: "确认接受" }).click();
   await expect(page.locator(".status-pill")).toContainText("已完成");
 });
 
-test("a refreshed static hash route restores the demo", async ({ page }) => {
+test("@static a refreshed static hash route restores the demo", async ({ page }) => {
   await rejectUnexpectedExternalTraffic(page);
   await page.goto("/#demo/cache-invalidation");
   await page.reload();
@@ -150,7 +148,7 @@ test("a refreshed static hash route restores the demo", async ({ page }) => {
   await expect(page.getByText("预生成演示").first()).toBeVisible();
 });
 
-test("360px layout supports keyboard focus without horizontal overflow", async ({ page }) => {
+test("@static 360px layout supports keyboard focus without horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await rejectUnexpectedExternalTraffic(page);
   await page.goto("/");

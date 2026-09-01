@@ -190,6 +190,48 @@ async def test_build_worker_runtime_accepts_compose_blank_openai_base_url(
     assert constructed[-1]["base_url"] is None
 
 
+@pytest.mark.anyio
+async def test_build_worker_runtime_without_model_key_stays_idle_without_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.analysis.service import DisabledWorkerService
+    from app.runtime import build_worker_runtime
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            pass
+
+    class FakeHttp:
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setenv("REPOSCOPE_OPENAI_API_KEY", "   ")
+    monkeypatch.setattr(
+        "app.runtime.OpenAICompatibleGateway.from_env",
+        lambda: pytest.fail("disabled worker must not construct the model gateway"),
+    )
+
+    runtime = build_worker_runtime(
+        Settings(snapshot_root=tmp_path / "snapshots"),
+        engine=FakeEngine(),  # type: ignore[arg-type]
+        http=FakeHttp(),  # type: ignore[arg-type]
+    )
+    assert isinstance(runtime.service, DisabledWorkerService)
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(runtime.service.run_forever(stop))
+    await asyncio.sleep(0)
+    assert not task.done()
+    stop.set()
+    await asyncio.wait_for(task, timeout=1)
+    await runtime.close()
+    records = [record for record in caplog.records if "worker_disabled" in record.message]
+    assert len(records) == 1
+    assert "model_not_configured" in records[0].message
+
+
 def test_build_worker_runtime_rejects_malformed_openai_base_without_logging_secret(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -98,9 +98,20 @@ class OpenAIModelSettings(BaseSettings):
         env_prefix="REPOSCOPE_OPENAI_", env_file=".env", extra="ignore", frozen=True
     )
 
-    api_key: SecretStr
+    api_key: SecretStr | None = None
     base_url: str | None = None
     model: str = "gpt-5-mini"
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _normalize_api_key(cls, value: object) -> object:
+        if value is None:
+            return None
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if not isinstance(raw, str):
+            return value
+        normalized = raw.strip()
+        return None if normalized == "" else normalized
 
     @field_validator("base_url", mode="before")
     @classmethod
@@ -121,6 +132,8 @@ class OpenAICompatibleGateway:
     """Thin environment-configured structured-output production adapter."""
 
     def __init__(self, settings: OpenAIModelSettings) -> None:
+        if settings.api_key is None:
+            raise ValueError("model credentials are not configured")
         from langchain_openai import ChatOpenAI
 
         self._model = ChatOpenAI(

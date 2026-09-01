@@ -9,6 +9,24 @@ from app.telemetry import StructuredTelemetry
 
 
 _LOG = logging.getLogger("reposcope.worker")
+
+
+class DisabledWorkerService:
+    """Keep maintenance alive without claiming jobs when no model is configured."""
+
+    def __init__(self, telemetry: StructuredTelemetry | None = None) -> None:
+        self._telemetry = telemetry or StructuredTelemetry(service="worker")
+
+    async def run_forever(self, stop: asyncio.Event) -> None:
+        _LOG.warning("worker_disabled code=model_not_configured")
+        self._telemetry.emit(
+            "worker_disabled",
+            status="DEGRADED",
+            error_code="model_not_configured",
+        )
+        await stop.wait()
+
+
 class WorkerService:
     """Supervise durable claims without exposing exception or secret details."""
 

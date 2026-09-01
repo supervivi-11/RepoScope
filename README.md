@@ -43,7 +43,7 @@ Worker ── 安全 GitHub 摄取 ── 固定 commit 快照
 
 ## 本地启动
 
-要求：Python 3.12+、Node.js 24+、Docker Compose。复制配置后填写自己的密钥；不要提交 `.env`。
+要求：Python 3.12+、Node.js 24+、Docker Compose。复制配置后填写自己的密钥；不要提交 `.env`。如果暂时不填写模型 Key，Compose 仍可完成数据库迁移、健康检查和静态界面启动；worker 会进入不领取任务的安全降级状态。填写 Key 后重建 worker 才会处理实时分析。
 
 ```powershell
 Copy-Item .env.example .env
@@ -77,10 +77,13 @@ npm run typecheck
 npm run test:build-config
 npm run build
 npm run build:live
-npx playwright test --list
+npm run test:e2e
+
+Set-Location ..
+.\.venv\Scripts\python.exe backend\scripts\scan_release_secrets.py --repo-root . --artifact frontend\dist --allowlist security\secret-scan-allowlist.json
 ```
 
-Task 8 才会执行最终 Docker、迁移、浏览器 E2E、secret scan 与完整发布候选验证。
+Task 8 的实际命令、环境与观察结果见 [发布验证记录](docs/release-verification.md)。
 
 ## 可复现评测骨架
 
