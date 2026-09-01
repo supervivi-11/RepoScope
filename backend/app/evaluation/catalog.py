@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .contracts import BenchmarkSlot
+from .contracts import BenchmarkSlot, CurationCandidate
 from .jsonl import JsonlContractError, read_jsonl
 
 
@@ -14,3 +14,13 @@ def load_slot_catalog(path: Path) -> tuple[BenchmarkSlot, ...]:
     if sum(item.split == "development" for item in slots) != 6:
         raise JsonlContractError("slot catalog must have a six/six split")
     return slots
+
+
+def load_candidate_catalog(path: Path) -> tuple[CurationCandidate, ...]:
+    candidates = read_jsonl(path, CurationCandidate)
+    if not 1 <= len(candidates) <= 12:
+        raise JsonlContractError("candidate catalog must contain one to twelve rows")
+    repositories = [item.repo_url.casefold() for item in candidates]
+    if len(set(repositories)) != len(repositories):
+        raise JsonlContractError("candidate catalog allows one candidate per repository")
+    return candidates

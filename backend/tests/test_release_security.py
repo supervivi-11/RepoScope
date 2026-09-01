@@ -6,7 +6,13 @@ import subprocess
 from pathlib import Path
 
 import app.release_security as release_security
-from app.release_security import SecretAllowlist, scan_bytes, scan_git_history
+from app.release_security import (
+    SecretAllowlist,
+    forbidden_tracked_paths,
+    scan_bytes,
+    scan_git_history,
+    tracked_paths,
+)
 
 
 def test_secret_scan_reports_location_and_rule_without_leaking_value() -> None:
@@ -61,6 +67,27 @@ def test_git_history_scan_finds_a_removed_secret(tmp_path: Path) -> None:
     assert any(item.path == "config.txt" and item.rule == "github_token" for item in findings)
 
 
+def test_git_history_scan_rejects_removed_private_curation_paths(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "RepoScope Test"], cwd=tmp_path, check=True)
+    evidence = tmp_path / "local" / "evaluation" / "curation" / "case" / "evidence.json"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text('{"gold_files":["src/parser.py"]}', encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "local/evaluation/curation/case/evidence.json"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "leak fixture"], cwd=tmp_path, check=True)
+    evidence.unlink()
+    subprocess.run(["git", "commit", "-qam", "remove fixture"], cwd=tmp_path, check=True)
+
+    findings = scan_git_history(tmp_path)
+
+    assert any(
+        item.path == "local/evaluation/curation/case/evidence.json"
+        and item.rule == "forbidden_history_path"
+        for item in findings
+    )
+
+
 def test_git_history_allowlist_is_scoped_to_every_path_for_shared_blob(
     tmp_path: Path,
 ) -> None:
@@ -111,3 +138,16 @@ def test_compose_frontend_healthcheck_uses_explicit_ipv4_loopback() -> None:
     compose = (Path(__file__).parents[2] / "docker-compose.yml").read_text(encoding="utf-8")
 
     assert "wget -q -O /dev/null http://127.0.0.1/" in compose
+
+
+def test_private_curation_evidence_is_ignored_and_forbidden_if_tracked() -> None:
+    root = Path(__file__).parents[2]
+    private_path = "local/evaluation/curation/example/evidence.v1.json"
+
+    ignored = subprocess.run(
+        ["git", "check-ignore", "--quiet", private_path], cwd=root
+    )
+
+    assert ignored.returncode == 0
+    assert forbidden_tracked_paths([private_path]) == [private_path]
+    assert forbidden_tracked_paths(tracked_paths(root)) == []

@@ -1,0 +1,71 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "candidate_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "issue_body": {
+      "anyOf": [
+        {
+          "maxLength": 100000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Issue Body"
+    },
+    "issue_number": {
+      "title": "Issue Number",
+      "type": "integer"
+    },
+    "issue_title": {
+      "maxLength": 10000,
+      "minLength": 1,
+      "title": "Issue Title",
+      "type": "string"
+    },
+    "pre_fix_commit_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Pre Fix Commit Sha",
+      "type": "string"
+    },
+    "repo_url": {
+      "title": "Repo Url",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "reposcope.eval.candidate.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "snapshot_tree_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Snapshot Tree Digest",
+      "type": "string"
+    },
+    "state": {
+      "const": "qualified_pending_dataset_lock",
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "state",
+    "repo_url",
+    "issue_number",
+    "issue_title",
+    "pre_fix_commit_sha",
+    "snapshot_tree_digest"
+  ],
+  "title": "CurationCandidate",
+  "type": "object"
+}

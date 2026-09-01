@@ -108,13 +108,27 @@ def scan_git_history(root: Path, allowlist: SecretAllowlist | None = None) -> li
                 object_paths.setdefault(parts[2], set()).add(path)
     if not object_paths:
         return []
+    historical_paths = {
+        path.replace("\\", "/")
+        for paths in object_paths.values()
+        for path in paths
+    }
+    findings = [
+        SecretFinding(
+            "git-history",
+            path,
+            0,
+            "forbidden_history_path",
+            hashlib.sha256(path.encode("utf-8")).hexdigest(),
+        )
+        for path in forbidden_tracked_paths(historical_paths)
+    ]
     checks = _git(
         root,
         "cat-file",
         "--batch-check=%(objectname) %(objecttype) %(objectsize)",
         input_text="\n".join(object_paths) + "\n",
     ).stdout.splitlines()
-    findings: list[SecretFinding] = []
     for check in checks:
         parts = check.split()
         if len(parts) != 3 or parts[1] != "blob":

@@ -24,9 +24,9 @@
 
 ## 评测真实性
 
-- [ ] 十二个 case 均通过人工选择条件
-- [x] 6/6 metadata-only 槽位在任何模型运行前锁定；真实 case 尚未策展
-- [x] hidden gold 未提交、未传给 runner（当前不存在真实 gold）
+- [ ] 十二个 case 均通过人工选择条件（当前 2 个合格 pre-split candidates，尚余 10 个）
+- [x] 6/6 metadata-only 槽位保持 `unfilled`；选满 12 个前不提前分组
+- [x] pre-split 修复证据与 gold 仅保存在被忽略的 `local/evaluation/`，未提交、未传给 runner
 - [ ] 真实结果保留 case digest、模型与 rate-card 版本
 - [x] README 中的所有数字来自可复现结果或明确写为目标/未执行
 - [x] 未运行真实评测，所有页面继续明确写“未执行/无成绩”

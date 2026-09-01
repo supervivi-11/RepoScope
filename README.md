@@ -87,10 +87,11 @@ Task 8 的实际命令、环境与观察结果见 [发布验证记录](docs/rele
 
 ## 可复现评测骨架
 
-Task 7 只提供离线、无付费调用的评测契约与 runner。十二个数据槽仍为 `unfilled`，所以以下验证不会输出成绩：
+评测仍只提供离线、无付费调用的契约与 runner。十二个数据槽保持 `unfilled`；当前只有 2 个通过初步人工核验、尚未分组的候选，仍需选满 12 个后才能锁定 6/6 分割。以下验证不会输出成绩：
 
 ```powershell
 .\.venv\Scripts\python.exe -m app.evaluation.cli validate-slots evals\benchmark-slots.v1.jsonl
+.\.venv\Scripts\python.exe -m app.evaluation.cli validate-candidates evals\curation-candidates.v1.jsonl
 .\.venv\Scripts\python.exe -c "from pathlib import Path; from app.evaluation.schemas import export_schemas; assert not export_schemas(Path('evals/schemas'), check=True)"
 ```
 
