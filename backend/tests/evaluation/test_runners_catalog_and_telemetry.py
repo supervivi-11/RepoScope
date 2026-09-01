@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from app.evaluation.catalog import load_slot_catalog
-from app.evaluation.contracts import BenchmarkCase, EvaluationPrediction
+from app.evaluation.catalog import load_candidate_catalog, load_slot_catalog
+from app.evaluation.contracts import BenchmarkCase, CurationCandidate, EvaluationPrediction
+from app.evaluation.jsonl import JsonlContractError, write_jsonl
 from app.evaluation.runners import IssueOnlyRunner, RepoScopeRunner
 from app.evaluation.snapshot import snapshot_tree_digest
 from app.telemetry import StructuredTelemetry
@@ -16,6 +17,20 @@ from app.telemetry import StructuredTelemetry
 
 SHA = "a" * 40
 DIGEST = "b" * 64
+
+
+def _candidate(candidate_id: str, repo_url: str, issue_number: int) -> CurationCandidate:
+    return CurationCandidate(
+        schema_version="reposcope.eval.candidate.v1",
+        candidate_id=candidate_id,
+        state="qualified_pending_dataset_lock",
+        repo_url=repo_url,
+        issue_number=issue_number,
+        issue_title="Frozen issue",
+        issue_body=None,
+        pre_fix_commit_sha=SHA,
+        snapshot_tree_digest=DIGEST,
+    )
 
 
 def _case() -> BenchmarkCase:
@@ -42,6 +57,80 @@ def test_committed_catalog_has_twelve_unfilled_slots_and_six_six_split() -> None
     assert sum(item.split == "development" for item in slots) == 6
     assert sum(item.split == "hidden" for item in slots) == 6
     assert all(item.state == "unfilled" for item in slots)
+
+
+def test_candidate_catalog_accepts_verified_inputs_without_assigning_a_split(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "candidates.jsonl"
+    candidates = tuple(
+        _candidate(candidate_id, repo_url, issue_number)
+        for candidate_id, repo_url, issue_number in (
+            ("python-hyper-h11-issue-92", "https://github.com/python-hyper/h11", 92),
+            ("pallets-click-issue-2819", "https://github.com/pallets/click", 2819),
+        )
+    )
+    write_jsonl(path, candidates)
+
+    loaded = load_candidate_catalog(path)
+
+    assert loaded == (candidates[1], candidates[0])
+    assert all("split" not in type(item).model_fields for item in loaded)
+
+
+def test_committed_candidates_remain_pre_split_and_runner_safe() -> None:
+    root = Path(__file__).resolve().parents[3]
+
+    candidates = load_candidate_catalog(root / "evals" / "curation-candidates.v1.jsonl")
+
+    assert [item.candidate_id for item in candidates] == [
+        "pallets-click-issue-2819",
+        "python-hyper-h11-issue-92",
+    ]
+    assert all("split" not in type(item).model_fields for item in candidates)
+    assert all("gold_files" not in type(item).model_fields for item in candidates)
+
+
+def test_candidate_catalog_rejects_a_second_case_from_the_same_repository(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "candidates.jsonl"
+    write_jsonl(
+        path,
+        (
+            _candidate("h11-issue-92", "https://github.com/python-hyper/h11", 92),
+            _candidate("h11-issue-121", "https://github.com/PYTHON-HYPER/H11", 121),
+        ),
+    )
+
+    with pytest.raises(JsonlContractError, match="one candidate per repository"):
+        load_candidate_catalog(path)
+
+
+def test_candidate_catalog_rejects_more_than_twelve_candidates(tmp_path: Path) -> None:
+    path = tmp_path / "candidates.jsonl"
+    write_jsonl(
+        path,
+        tuple(
+            _candidate(
+                f"owner-{index}-repo-issue-{index}",
+                f"https://github.com/owner-{index}/repo",
+                index,
+            )
+            for index in range(1, 14)
+        ),
+    )
+
+    with pytest.raises(JsonlContractError, match="one to twelve"):
+        load_candidate_catalog(path)
+
+
+def test_candidate_catalog_rejects_an_empty_file(tmp_path: Path) -> None:
+    path = tmp_path / "candidates.jsonl"
+    path.write_bytes(b"")
+
+    with pytest.raises(JsonlContractError, match="one to twelve"):
+        load_candidate_catalog(path)
 
 
 @pytest.mark.anyio

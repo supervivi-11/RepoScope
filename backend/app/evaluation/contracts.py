@@ -54,6 +54,30 @@ class BenchmarkCase(EvaluationModel):
         return validate_issue_number(value)
 
 
+class CurationCandidate(EvaluationModel):
+    schema_version: Literal["reposcope.eval.candidate.v1"]
+    candidate_id: str = Field(
+        min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9-]*$"
+    )
+    state: Literal["qualified_pending_dataset_lock"]
+    repo_url: str
+    issue_number: int = Field(strict=True)
+    issue_title: str = Field(min_length=1, max_length=10_000)
+    issue_body: str | None = Field(default=None, max_length=100_000)
+    pre_fix_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    snapshot_tree_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("repo_url")
+    @classmethod
+    def _repository_url(cls, value: str) -> str:
+        return RepositoryCoordinates.parse(value).canonical_url
+
+    @field_validator("issue_number")
+    @classmethod
+    def _issue_number(cls, value: int) -> int:
+        return validate_issue_number(value)
+
+
 class BenchmarkGold(EvaluationModel):
     schema_version: Literal["reposcope.eval.gold.v1"]
     case_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9-]*$")

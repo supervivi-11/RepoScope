@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from .catalog import load_slot_catalog
+from .catalog import load_candidate_catalog, load_slot_catalog
 from .contracts import BenchmarkCase, BenchmarkGold, BenchmarkResult, ScriptedPrediction
 from .jsonl import read_jsonl, write_jsonl
 from .metrics import score_benchmark
@@ -21,6 +21,8 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     validate_slots = commands.add_parser("validate-slots")
     validate_slots.add_argument("catalog")
+    validate_candidates = commands.add_parser("validate-candidates")
+    validate_candidates.add_argument("catalog")
     run = commands.add_parser("run")
     run.add_argument("--system", choices=("issue_only", "reposcope"), required=True)
     run.add_argument("--cases", required=True)
@@ -45,6 +47,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             f"validated {len(slots)} metadata-only slots "
             f"({development} development, {hidden} hidden)"
+        )
+        return 0
+    if args.command == "validate-candidates":
+        candidates = load_candidate_catalog(Path(args.catalog))
+        noun = "candidate" if len(candidates) == 1 else "candidates"
+        print(
+            f"validated {len(candidates)} qualified pre-split {noun}; "
+            "no split was assigned and no model was called"
         )
         return 0
     if args.command == "run":

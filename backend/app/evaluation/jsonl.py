@@ -103,6 +103,9 @@ def write_jsonl(path: Path, rows: tuple[BaseModel, ...]) -> None:
 
 
 def _identity(item: BaseModel) -> tuple[str, ...]:
+    candidate_id = getattr(item, "candidate_id", None)
+    if isinstance(candidate_id, str):
+        return (candidate_id,)
     case_id = getattr(item, "case_id", None)
     system = getattr(item, "system", None)
     if isinstance(case_id, str) and isinstance(system, str):

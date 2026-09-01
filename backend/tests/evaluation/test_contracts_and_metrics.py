@@ -12,6 +12,7 @@ from app.evaluation.contracts import (
     BenchmarkGold,
     BenchmarkResult,
     BenchmarkSlot,
+    CurationCandidate,
     EvaluationUsage,
     EVALUATION_JSONL_ROW_MAX_BYTES,
 )
@@ -102,6 +103,35 @@ def test_contracts_are_strict_versioned_and_keep_gold_separate() -> None:
         )
     with pytest.raises(ValidationError):
         _result(predicted_files=("src/a.py", "src/a.py"))
+
+
+def test_pre_split_candidate_accepts_only_runner_safe_frozen_input() -> None:
+    payload = {
+        "schema_version": "reposcope.eval.candidate.v1",
+        "candidate_id": "python-hyper-h11-issue-92",
+        "state": "qualified_pending_dataset_lock",
+        "repo_url": "https://github.com/python-hyper/h11",
+        "issue_number": 92,
+        "issue_title": "Handle repeated content lengths",
+        "issue_body": "The parser rejects equal values.",
+        "pre_fix_commit_sha": SHA,
+        "snapshot_tree_digest": DIGEST,
+    }
+
+    candidate = CurationCandidate.model_validate(payload)
+
+    assert candidate.candidate_id == "python-hyper-h11-issue-92"
+    for forbidden in (
+        "split",
+        "slot_id",
+        "case_id",
+        "fix_pr_url",
+        "fix_commit_sha",
+        "changed_files",
+        "gold_files",
+    ):
+        with pytest.raises(ValidationError):
+            CurationCandidate.model_validate({**payload, forbidden: "must-not-enter"})
 
 
 def test_jsonl_writer_is_canonical_and_reader_rejects_duplicate_keys(tmp_path: Path) -> None:

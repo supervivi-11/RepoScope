@@ -8,12 +8,14 @@ from .contracts import (
     BenchmarkGold,
     BenchmarkResult,
     BenchmarkSlot,
+    CurationCandidate,
     EvaluationSummary,
     ScriptedPrediction,
 )
 
 
 _SCHEMAS = {
+    "candidate.v1.schema.json": CurationCandidate,
     "slot.v1.schema.json": BenchmarkSlot,
     "case.v1.schema.json": BenchmarkCase,
     "gold.v1.schema.json": BenchmarkGold,

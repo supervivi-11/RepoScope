@@ -9,6 +9,7 @@ from app.evaluation.contracts import (
     BenchmarkCase,
     BenchmarkGold,
     BenchmarkResult,
+    CurationCandidate,
     EvaluationUsage,
     ScriptedPrediction,
 )
@@ -24,6 +25,15 @@ def test_checked_in_evaluation_schemas_match_pydantic_contracts(tmp_path: Path) 
     assert export_schemas(root / "evals" / "schemas", check=True) == ()
 
 
+def test_schema_export_includes_the_pre_split_candidate_contract(tmp_path: Path) -> None:
+    export_schemas(tmp_path)
+
+    schema = json.loads((tmp_path / "candidate.v1.schema.json").read_text(encoding="utf-8"))
+
+    assert schema["properties"]["schema_version"]["const"] == "reposcope.eval.candidate.v1"
+    assert "split" not in schema["properties"]
+
+
 def test_cli_validates_catalog_without_running_models_or_claiming_results(
     capsys,
 ) -> None:
@@ -36,6 +46,38 @@ def test_cli_validates_catalog_without_running_models_or_claiming_results(
     assert exit_code == 0
     assert captured.out == "validated 12 metadata-only slots (6 development, 6 hidden)\n"
     assert "score" not in captured.out.casefold()
+
+
+def test_cli_validates_pre_split_candidates_without_running_a_model(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    path = tmp_path / "candidates.jsonl"
+    write_jsonl(
+        path,
+        (
+            CurationCandidate(
+                schema_version="reposcope.eval.candidate.v1",
+                candidate_id="python-hyper-h11-issue-92",
+                state="qualified_pending_dataset_lock",
+                repo_url="https://github.com/python-hyper/h11",
+                issue_number=92,
+                issue_title="Frozen issue",
+                issue_body=None,
+                pre_fix_commit_sha="a" * 40,
+                snapshot_tree_digest="b" * 64,
+            ),
+        ),
+    )
+
+    exit_code = main(["validate-candidates", str(path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.out == (
+        "validated 1 qualified pre-split candidate; "
+        "no split was assigned and no model was called\n"
+    )
 
 
 def test_empty_result_template_is_really_empty() -> None:
