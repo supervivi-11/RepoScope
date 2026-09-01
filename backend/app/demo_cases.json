@@ -1,0 +1,80 @@
+{
+  "version": "1",
+  "cases": [
+    {
+      "case_id": "parser-boundary",
+      "artifact_version": "1",
+      "title": "Parser boundary investigation",
+      "repo_url": "https://github.com/example/parser",
+      "issue_number": 101,
+      "report": {
+        "outcome": "insufficient_evidence",
+        "issue_summary": "A parser rejects an otherwise valid boundary input.",
+        "observed_behavior": "The static artifact records the reported rejection.",
+        "expected_behavior": "The boundary input should be accepted.",
+        "primary_hypothesis": null,
+        "alternative_hypotheses": [],
+        "evidence": [],
+        "impacted_files": [],
+        "implementation_steps": [],
+        "proposed_tests": [],
+        "uncertainties": ["Demo metadata does not claim a verified root cause."],
+        "confidence": 0.2
+      },
+      "events": [
+        {"sequence": 1, "event_type": "analysis_queued", "data": {"status": "QUEUED"}},
+        {"sequence": 2, "event_type": "review_ready", "data": {"status": "REVIEW_READY"}}
+      ]
+    },
+    {
+      "case_id": "cache-invalidation",
+      "artifact_version": "1",
+      "title": "Cache invalidation investigation",
+      "repo_url": "https://github.com/example/cache",
+      "issue_number": 202,
+      "report": {
+        "outcome": "insufficient_evidence",
+        "issue_summary": "Cached state remains visible after an update.",
+        "observed_behavior": "The static artifact records stale state.",
+        "expected_behavior": "Updated state should be returned.",
+        "primary_hypothesis": null,
+        "alternative_hypotheses": [],
+        "evidence": [],
+        "impacted_files": [],
+        "implementation_steps": [],
+        "proposed_tests": [],
+        "uncertainties": ["Demo metadata does not claim a verified root cause."],
+        "confidence": 0.2
+      },
+      "events": [
+        {"sequence": 1, "event_type": "analysis_queued", "data": {"status": "QUEUED"}},
+        {"sequence": 2, "event_type": "review_ready", "data": {"status": "REVIEW_READY"}}
+      ]
+    },
+    {
+      "case_id": "async-cleanup",
+      "artifact_version": "1",
+      "title": "Async cleanup investigation",
+      "repo_url": "https://github.com/example/async-tools",
+      "issue_number": 303,
+      "report": {
+        "outcome": "insufficient_evidence",
+        "issue_summary": "An asynchronous resource is not released on cancellation.",
+        "observed_behavior": "The static artifact records a cleanup failure.",
+        "expected_behavior": "Cancellation should release owned resources.",
+        "primary_hypothesis": null,
+        "alternative_hypotheses": [],
+        "evidence": [],
+        "impacted_files": [],
+        "implementation_steps": [],
+        "proposed_tests": [],
+        "uncertainties": ["Demo metadata does not claim a verified root cause."],
+        "confidence": 0.2
+      },
+      "events": [
+        {"sequence": 1, "event_type": "analysis_queued", "data": {"status": "QUEUED"}},
+        {"sequence": 2, "event_type": "review_ready", "data": {"status": "REVIEW_READY"}}
+      ]
+    }
+  ]
+}

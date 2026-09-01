@@ -1,0 +1,46 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-08-29-reposcope-v1.md
+
+## Preflight interface scan
+
+| Tasks | Producer / consumer interface | Finding |
+|---|---|---|
+| 1 → 2 | Python package, settings, HTTP test stack | Consistent; ingestion builds on the backend skeleton. |
+| 2 → 3 | Immutable `RepositorySnapshot` and normalized source paths | Consistent; Task 3 consumes only safely extracted files. |
+| 3 → 4 | Read-only tool interfaces and source-location metadata | Consistent; the graph has no shell or write interface. |
+| 4 → 5 | `AnalysisState`, `AnalysisReport`, events, revision command | Consistent; persistence exposes graph state through API schemas. |
+| 5 → 6 | REST/SSE contracts | Consistent; web live mode consumes them while demo mode uses artifacts. |
+| 6 → 7 | Demo artifact schema and observable UI events | Consistent; evaluation and portfolio docs can reuse the same report schema. |
+| 7 → 8 | Test commands, benchmark/result schemas, release checklist | Consistent; final verification consumes documented commands. |
+| Task 1 | Tests precede health and landing behavior; configuration is non-behavioral scaffolding | Internally consistent. |
+| Task 2 | Security cases map to explicit parsing, HTTP, extraction, and limits behavior | Internally consistent. |
+| Task 3 | AST fallback and seven tools preserve immutable source locations | Internally consistent. |
+| Task 4 | Budgets and evidence rules have deterministic fake-model tests | Internally consistent. |
+| Task 5 | Persistence, recovery, API, and SSE share analysis/event identifiers | Internally consistent. |
+| Task 6 | Local live mode and public static mode are separate build-time behaviors | Internally consistent. |
+| Task 7 | Metrics are deterministic; real benchmark claims remain explicitly unverified | Internally consistent. |
+| Task 8 | Verification records observed evidence and does not publish externally | Internally consistent. |
+
+Preflight: no plan/spec conflicts found.
+
+Task 1: fix round 1/5 (5 addressed, 0 open; commits 0d08ba3..c7d8ef0)
+Task 1: complete (commits bda9809..c7d8ef0, review clean)
+Task 2: fix round 1/5 (8 addressed, 0 open; commits fb9fa34..20015fa)
+Task 2: complete (commits c7d8ef0..20015fa, review clean)
+Task 3: minor (deferred): distinguish AST load references from bindings and preserve distinct match kinds on the same line.
+Task 3: minor (deferred): fail closed on os.walk traversal errors instead of silently indexing a partial tree.
+Task 3: minor (deferred): split the cohesive but 638-line index module to reduce policy drift and review risk.
+Task 3: minor (deferred): make index state truly immutable so the snapshot SHA cannot be reassigned after indexing.
+Task 3: fix round 1/5 (2 addressed, 1 open — multiline parenthesized decorator boundary; commits 49adb89..383a023)
+Task 3: fix round 2/5 (1 addressed, 0 open; commits 383a023..701e60f)
+Task 3: complete (commits 20015fa..701e60f, review clean; 4 deferred minors)
+Task 4: minor (deferred): expose user_revisions alongside other budget counters in observable events.
+Task 4: minor (deferred): split the 742-line graph builder into focused routing/event/accounting helpers.
+Task 4: fix round 1/5 (6 addressed, 1 open — malicious non-primary evidence explanation; commits 00057cc..769bc2f)
+Task 4: fix round 2/5 (1 addressed, 0 open; commits 769bc2f..5e3a921)
+Task 4: complete (commits 701e60f..5e3a921, review clean; 2 deferred minors)
+Task 5: fix round 1/5 (9 addressed, 7 follow-up findings open; commits 8799d55..aa9fd99)
+Task 5: fix round 2/5 (7 addressed, 0 open; commits aa9fd99..9177f3e)
+Task 5: complete (commits 5e3a921..9177f3e, review clean; live PostgreSQL verification deferred to Task 8 because Docker was unavailable)
+Task 6: complete (base 9177f3e; UI/demo delivery plus runtime hardening through the current Task 6 commit; backend 242 passed/1 skipped, frontend 65 passed, static/live builds pass, Playwright scenarios listed; browser execution deferred because local Chromium is unavailable; final review clean)
+Task 7: complete (base bf9c563; versioned JSONL evaluation contracts, deterministic metrics, answer-isolated scripted runners, 12 truthful unfilled 6/6 slots, safe telemetry/cleanup regressions, Chinese-first portfolio documentation; backend 268 passed/1 skipped, frontend 65 passed, schema/type/build checks pass; no real benchmark run or score; focused rereview has no Critical or Important findings)
+Task 8: complete (base a8cc704; backend 276 passed/1 skipped, frontend 65 passed, Chromium live 1/static 3, release scan passed, fresh PostgreSQL migration 20260830_0001 and Compose health passed; empty-Key worker safely degraded with no claims/model calls; independent reviewer found no Critical or Important issues; release verification and unpublished v0.1.0 draft prepared; no push/deploy/tag/release)

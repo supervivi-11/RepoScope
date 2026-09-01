@@ -1,0 +1,203 @@
+{
+  "$defs": {
+    "SystemMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "case_count": {
+          "minimum": 1,
+          "title": "Case Count",
+          "type": "integer"
+        },
+        "citation_hallucination_rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Citation Hallucination Rate"
+        },
+        "citation_validity": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Citation Validity"
+        },
+        "citations_emitted": {
+          "minimum": 0,
+          "title": "Citations Emitted",
+          "type": "integer"
+        },
+        "citations_valid": {
+          "minimum": 0,
+          "title": "Citations Valid",
+          "type": "integer"
+        },
+        "estimated_cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Cost Usd"
+        },
+        "file_recall_at_5": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "File Recall At 5",
+          "type": "number"
+        },
+        "hallucinated_citations": {
+          "minimum": 0,
+          "title": "Hallucinated Citations",
+          "type": "integer"
+        },
+        "median_latency_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Median Latency Ms"
+        },
+        "mrr": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Mrr",
+          "type": "number"
+        },
+        "successful_cases": {
+          "minimum": 0,
+          "title": "Successful Cases",
+          "type": "integer"
+        },
+        "system": {
+          "enum": [
+            "issue_only",
+            "reposcope"
+          ],
+          "title": "System",
+          "type": "string"
+        },
+        "total_input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Input Tokens"
+        },
+        "total_output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Output Tokens"
+        }
+      },
+      "required": [
+        "system",
+        "case_count",
+        "successful_cases",
+        "file_recall_at_5",
+        "mrr",
+        "citations_emitted",
+        "citations_valid",
+        "hallucinated_citations"
+      ],
+      "title": "SystemMetrics",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_count": {
+      "minimum": 1,
+      "title": "Case Count",
+      "type": "integer"
+    },
+    "file_recall_at_5_delta": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "File Recall At 5 Delta"
+    },
+    "mrr_delta": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mrr Delta"
+    },
+    "schema_version": {
+      "const": "reposcope.eval.summary.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "systems": {
+      "items": {
+        "$ref": "#/$defs/SystemMetrics"
+      },
+      "maxItems": 2,
+      "minItems": 1,
+      "title": "Systems",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "case_count",
+    "systems"
+  ],
+  "title": "EvaluationSummary",
+  "type": "object"
+}

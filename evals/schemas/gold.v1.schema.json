@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "gold_files": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5,
+      "minItems": 1,
+      "title": "Gold Files",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "reposcope.eval.gold.v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "case_id",
+    "gold_files"
+  ],
+  "title": "BenchmarkGold",
+  "type": "object"
+}
