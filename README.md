@@ -87,7 +87,7 @@ Task 8 的实际命令、环境与观察结果见 [发布验证记录](docs/rele
 
 ## 可复现评测骨架
 
-评测仍只提供离线、无付费调用的契约与 runner。十二个数据槽保持 `unfilled`；当前有 4 个通过初步人工核验、尚未分组的候选，仍需选满 12 个后才能锁定 6/6 分割。以下验证不会输出成绩：
+评测仍只提供离线、无付费调用的契约与 runner。十二个数据槽保持 `unfilled`；当前有 6 个通过初步人工核验、尚未分组的候选，仍需选满 12 个后才能锁定 6/6 分割。以下验证不会输出成绩：
 
 ```powershell
 .\.venv\Scripts\python.exe -m app.evaluation.cli validate-slots evals\benchmark-slots.v1.jsonl
