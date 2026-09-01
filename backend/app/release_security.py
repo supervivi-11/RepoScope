@@ -16,6 +16,27 @@ _RULES = {
     "aws_access_key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
 }
 _MAX_SCAN_BYTES = 5 * 1024 * 1024
+_DEVELOPMENT_GOLD_PATH = "evals/development-gold.v1.jsonl"
+_PUBLIC_DEVELOPMENT_GOLD = {
+    "dateutil-dateutil-issue-926": ("dateutil/tz/tz.py",),
+    "hynek-structlog-issue-476": ("src/structlog/_log_levels.py",),
+    "pallets-click-issue-2819": ("src/click/core.py",),
+    "pallets-flask-issue-2267": ("flask/app.py",),
+    "pyinvoke-invoke-issue-533": ("invoke/tasks.py",),
+    "tox-dev-platformdirs-issue-207": ("src/platformdirs/unix.py",),
+}
+_FORBIDDEN_EVALUATION_FIELDS = frozenset(
+    {
+        "changed_file_metadata",
+        "changed_paths",
+        "fix_commit_sha",
+        "fix_first_commit_sha",
+        "fix_merge_commit_sha",
+        "fix_pr_url",
+        "gold_files",
+        "gold_production_paths",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -154,6 +175,30 @@ def scan_git_history(root: Path, allowlist: SecretAllowlist | None = None) -> li
         ).stdout
         for path in object_paths[object_id]:
             findings.extend(scan_bytes("git-history", path, content, allowlist))
+            findings.extend(scan_evaluation_bytes("git-history", path, content))
+    return findings
+
+
+def scan_git_index(
+    root: Path, allowlist: SecretAllowlist | None = None
+) -> list[SecretFinding]:
+    output = subprocess.run(
+        ["git", "ls-files", "-s", "-z"], cwd=root, capture_output=True, check=True
+    ).stdout.decode("utf-8", errors="replace")
+    findings: list[SecretFinding] = []
+    for entry in output.split("\0"):
+        metadata, separator, path = entry.partition("\t")
+        parts = metadata.split()
+        if not separator or len(parts) != 3 or parts[2] != "0":
+            continue
+        content = subprocess.run(
+            ["git", "cat-file", "blob", parts[1]],
+            cwd=root,
+            capture_output=True,
+            check=True,
+        ).stdout
+        findings.extend(scan_bytes("git-index", path, content, allowlist))
+        findings.extend(scan_evaluation_bytes("git-index", path, content))
     return findings
 
 
@@ -181,11 +226,136 @@ def forbidden_tracked_paths(paths: Iterable[str]) -> list[str]:
     forbidden: list[str] = []
     for raw_path in paths:
         path = raw_path.replace("\\", "/")
+        folded = path.casefold()
         name = path.rsplit("/", 1)[-1].lower()
-        if name == ".env" or name.endswith((".sqlite", ".sqlite3", ".db")):
+        if "hidden-gold" in folded:
             forbidden.append(path)
-        elif path.startswith(("local/", "dist/", "frontend/dist/", "test-results/", "frontend/test-results/", "playwright-report/", "frontend/playwright-report/")):
+        elif name == ".env" or name.endswith((".sqlite", ".sqlite3", ".db")):
             forbidden.append(path)
-        elif path.startswith("evals/gold/") or path.startswith("evals/local-results/"):
+        elif folded.startswith(("local/", "dist/", "frontend/dist/", "test-results/", "frontend/test-results/", "playwright-report/", "frontend/playwright-report/")):
+            forbidden.append(path)
+        elif folded.startswith("evals/gold/") or folded.startswith("evals/local-results/"):
             forbidden.append(path)
     return sorted(set(forbidden))
+
+
+def forbidden_evaluation_artifacts(root: Path, paths: Iterable[str]) -> list[str]:
+    """Reject repair-answer fields from public, runner-safe evaluation inputs."""
+
+    violations: set[str] = set()
+    for raw_path in paths:
+        path = raw_path.replace("\\", "/")
+        if not _is_protected_evaluation_jsonl(path):
+            continue
+        file_path = root / Path(path)
+        if not file_path.is_file():
+            continue
+        for rule in scan_evaluation_bytes("tracked", path, file_path.read_bytes()):
+            field = rule.rule.removeprefix("forbidden_evaluation_field_")
+            violations.add(f"{path}:{field}")
+    return sorted(violations)
+
+
+def scan_evaluation_bytes(
+    source: str, path: str, content: bytes
+) -> list[SecretFinding]:
+    normalized = path.replace("\\", "/")
+    if not _is_protected_evaluation_jsonl(normalized):
+        return []
+    if len(content) > _MAX_SCAN_BYTES:
+        return [
+            _evaluation_finding(source, normalized, 0, "scan_limit_exceeded")
+        ]
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return [_evaluation_finding(source, normalized, 0, "invalid_utf8")]
+    if normalized == _DEVELOPMENT_GOLD_PATH:
+        if _valid_development_gold(text):
+            return []
+        return [
+            _evaluation_finding(
+                source, normalized, 0, "development_gold_contract"
+            )
+        ]
+    findings: list[SecretFinding] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            findings.append(
+                _evaluation_finding(source, normalized, line_number, "invalid_json")
+            )
+            continue
+        if not isinstance(payload, dict):
+            findings.append(
+                _evaluation_finding(source, normalized, line_number, "invalid_object")
+            )
+            continue
+        for field in sorted(_nested_forbidden_evaluation_fields(payload)):
+            findings.append(
+                _evaluation_finding(source, normalized, line_number, field)
+            )
+    return findings
+
+
+def _is_protected_evaluation_jsonl(path: str) -> bool:
+    folded = path.replace("\\", "/").casefold()
+    return folded.startswith("evals/") and folded.endswith(".jsonl")
+
+
+def _nested_forbidden_evaluation_fields(value: object) -> set[str]:
+    fields: set[str] = set()
+    if isinstance(value, dict):
+        fields.update(_FORBIDDEN_EVALUATION_FIELDS.intersection(value))
+        for child in value.values():
+            fields.update(_nested_forbidden_evaluation_fields(child))
+    elif isinstance(value, list):
+        for child in value:
+            fields.update(_nested_forbidden_evaluation_fields(child))
+    return fields
+
+
+def _valid_development_gold(text: str) -> bool:
+    observed: dict[str, tuple[str, ...]] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(payload, dict) or set(payload) != {
+            "case_id",
+            "gold_files",
+            "schema_version",
+        }:
+            return False
+        if payload.get("schema_version") != "reposcope.eval.gold.v1":
+            return False
+        case_id = payload.get("case_id")
+        gold_files = payload.get("gold_files")
+        if (
+            not isinstance(case_id, str)
+            or case_id in observed
+            or not isinstance(gold_files, list)
+            or not all(isinstance(path, str) for path in gold_files)
+        ):
+            return False
+        observed[case_id] = tuple(gold_files)
+    return observed == _PUBLIC_DEVELOPMENT_GOLD
+
+
+def _evaluation_finding(
+    source: str, path: str, line: int, field: str
+) -> SecretFinding:
+    rule = f"forbidden_evaluation_field_{field}"
+    return SecretFinding(
+        source=source,
+        path=path,
+        line=line,
+        rule=rule,
+        sha256=hashlib.sha256(f"{path}:{line}:{rule}".encode("utf-8")).hexdigest(),
+    )

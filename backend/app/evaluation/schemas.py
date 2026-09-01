@@ -10,6 +10,8 @@ from .contracts import (
     BenchmarkSlot,
     CurationCandidate,
     EvaluationSummary,
+    EvaluationSummaryV2,
+    LockedBenchmarkSlot,
     ScriptedPrediction,
 )
 
@@ -17,10 +19,12 @@ from .contracts import (
 _SCHEMAS = {
     "candidate.v1.schema.json": CurationCandidate,
     "slot.v1.schema.json": BenchmarkSlot,
+    "slot.v2.schema.json": LockedBenchmarkSlot,
     "case.v1.schema.json": BenchmarkCase,
     "gold.v1.schema.json": BenchmarkGold,
     "result.v1.schema.json": BenchmarkResult,
     "summary.v1.schema.json": EvaluationSummary,
+    "summary.v2.schema.json": EvaluationSummaryV2,
     "script.v1.schema.json": ScriptedPrediction,
 }
 

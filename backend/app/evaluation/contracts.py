@@ -32,6 +32,22 @@ class BenchmarkSlot(EvaluationModel):
         return self
 
 
+class LockedBenchmarkSlot(EvaluationModel):
+    schema_version: Literal["reposcope.eval.slot.v2"]
+    slot_id: str = Field(pattern=r"^(dev|hidden)-0[1-6]$")
+    split: Literal["development", "hidden"]
+    state: Literal["locked"] = "locked"
+    case_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    split_key_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _matching_split(self) -> LockedBenchmarkSlot:
+        expected = "development" if self.slot_id.startswith("dev-") else "hidden"
+        if self.split != expected:
+            raise ValueError("slot prefix and split must agree")
+        return self
+
+
 class BenchmarkCase(EvaluationModel):
     schema_version: Literal["reposcope.eval.case.v1"]
     case_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9-]*$")
@@ -203,6 +219,16 @@ class SystemMetrics(EvaluationModel):
 
 class EvaluationSummary(EvaluationModel):
     schema_version: Literal["reposcope.eval.summary.v1"]
+    case_count: int = Field(ge=1)
+    systems: tuple[SystemMetrics, ...] = Field(min_length=1, max_length=2)
+    file_recall_at_5_delta: float | None = None
+    mrr_delta: float | None = None
+
+
+class EvaluationSummaryV2(EvaluationModel):
+    schema_version: Literal["reposcope.eval.summary.v2"]
+    split: Literal["development", "hidden", "all"]
+    dataset_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     case_count: int = Field(ge=1)
     systems: tuple[SystemMetrics, ...] = Field(min_length=1, max_length=2)
     file_recall_at_5_delta: float | None = None

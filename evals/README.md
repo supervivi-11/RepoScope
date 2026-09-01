@@ -2,108 +2,82 @@
 
 ## 当前真实性状态
 
-- `benchmark-slots.v1.jsonl` 只有 12 个 metadata-only 空槽：`dev-01`–`dev-06` 与 `hidden-01`–`hidden-06`。
-- 槽位尚未绑定仓库、Issue、修复 PR 或答案，状态统一为 `unfilled`。
-- `curation-candidates.v1.jsonl` 当前包含 6 个通过初步人工核验的 pre-split candidate；它们没有 `split`、slot 或任何修复答案字段，不能作为 benchmark case 运行。
-- `results-empty.v1.jsonl` 是零字节结果模板。
-- 当前没有真实模型运行、结果或 benchmark 分数；目标值不是已实现成绩。
+- `curation-candidates.v1.jsonl` 保存 12 个通过人工核验、尚未带答案的原始候选，作为锁定算法的审计输入。
+- `benchmark-cases.v1.jsonl` 是两个 runner 唯一可读取的 12-case 数据集；不含修复 PR、diff、fix commit、changed paths 或 gold。
+- `benchmark-slots.v2.jsonl` 保存确定性的 6/6 锁定映射；`benchmark-slots.v1.jsonl` 仅作为 Task 7 的空槽历史契约保留，不再表示当前状态。
+- `development-gold.v1.jsonl` 公开 6 个开发集答案；hidden gold、修复证据和源码快照只存在于被 Git 忽略的 `local/evaluation/`。
+- `benchmark-cases.v1.sha256` 固定完整数据集指纹：`de76c423ffe936743f979f35cc634caed064e571b3f5c9563b219ac5025ceea7`。
+- 尚未运行真实模型，因此没有 benchmark 分数、Token、成本或胜负结论。
 
-这样设计是刻意的：未经人工核验就填写“历史 Bug”会制造不可复现数据。候选必须先冻结 runner-safe 的 Issue 与 pre-fix 快照；修复 PR、changed paths、gold 与策展笔记只保存在被 Git 忽略的 `local/evaluation/`。选满 12 个以前，候选不能提前获得 development/hidden 身份。
-
-### `reposcope.eval.candidate.v1`
-
-候选包含稳定 candidate ID、公开仓库 URL、冻结的 Issue 标题/正文、pre-fix commit 与快照 digest。状态只能是 `qualified_pending_dataset_lock`。它不包含 split、slot、case ID、修复 PR、fix commit、changed paths 或 gold。
-
-候选目录允许 1–12 条且每个仓库最多一条。`validate-candidates` 只验证契约，不会调用 runner、模型或 scorer。当前六个候选是：
-
-- [`hynek/structlog#476`](https://github.com/hynek/structlog/issues/476)；
-- [`pallets/click#2819`](https://github.com/pallets/click/issues/2819)；
-- [`pallets/flask#2267`](https://github.com/pallets/flask/issues/2267)；
-- [`pallets/jinja#1198`](https://github.com/pallets/jinja/issues/1198)；
-- [`pytest-dev/pluggy#544`](https://github.com/pytest-dev/pluggy/issues/544)；
-- [`python-hyper/h11#92`](https://github.com/python-hyper/h11/issues/92)。
-
-这六个名称表示“待全集锁定的候选”，不是开发集案例，也不是评测成绩。
-
-## 四类数据必须物理分离
+## 数据与答案必须物理分离
 
 ```text
-case.v1 JSONL ──> Issue-only / RepoScope runner ──> result.v1 JSONL
+benchmark-cases.v1.jsonl ──> Issue-only / RepoScope runner ──> result.v1 JSONL
 
-gold.v1 JSONL ───────────────────────────────────> scorer ──> summary.v1 JSON
+development/hidden gold ────────────────────────────────────> scorer ──> summary.v1 JSON
 ```
 
-Runner 只能接收 case。Gold 只在模型调用全部结束后交给 scorer。禁止先加载包含答案的“大对象”再靠约定忽略字段。
+Runner 只能接收 case。Gold 只在对应 split 的模型调用全部结束后交给 scorer，禁止先加载含答案的对象再靠约定忽略字段。发布安全扫描会拒绝公开 runner 文件中的修复元数据和 `gold_files`，也会拒绝任何位置被 Git 跟踪的 `hidden-gold` 文件。
 
-### `reposcope.eval.case.v1`
+### 版本化契约
 
-包含 case ID、split、仓库 URL、冻结的 Issue 标题/正文、pre-fix commit SHA 与快照树 SHA-256。它不包含修复 PR、fix commit、diff、修改文件或 gold 文件。
+- `reposcope.eval.candidate.v1`：Issue、pre-fix SHA 与快照 digest；无 split 和答案。
+- `reposcope.eval.case.v1`：加入确定性 split 后的 runner 输入；仍无答案。
+- `reposcope.eval.slot.v2`：slot、case 和 split-key digest 的锁定记录。
+- `reposcope.eval.gold.v1`：case ID 与 1–5 个 pre-fix 快照中真实存在的 Python 生产文件。
+- `reposcope.eval.result.v1`：系统、预测、引用、错误、dataset digest 与可空 usage。
+- `reposcope.eval.summary.v1`：Task 7 的历史摘要契约，保留兼容。
+- `reposcope.eval.summary.v2`：在指标和成对差值之外，强制保存 split 与完整 12-case dataset digest。
 
-### `reposcope.eval.gold.v1`
+JSON Schema 位于 `evals/schemas/`。JSONL 使用 UTF-8、键排序、紧凑分隔符、LF 与末尾换行；读取器拒绝 BOM、重复 key、NaN/Infinity、重复 ID、过大行和非规范路径。
 
-只包含 case ID 与 1–5 个确定性 gold 生产源码路径。Hidden gold 不进入公开仓库。
+## 十二个历史 Bug 的选择边界
 
-### `reposcope.eval.result.v1`
+每个 case 均满足：公开 Python 仓库；已关闭 Issue 和单一目的已合并修复；冻结 Issue 与修复前 commit；修复不超过 8 个文件；gold 为 pre-fix 中已存在的 1–5 个 Python 生产文件；排除测试、文档、生成物、vendor、重命名、新增/删除文件和宽泛重构；Issue 不直接泄漏答案；静态调查可形成证据；每仓库最多一例。策展者可以核验修复元数据，但 runner 永远不能读取修复 PR、diff 或修复后源码。
 
-包含系统名、成功/失败状态、有序预测文件、完整引用、安全错误码、runner/model 标识、case 数据集 digest，以及可空的延迟、Token、成本、工具调用和模型尝试数。没有实测值时必须是 `null`，不能用 `0` 冒充。
+## 已锁定的 6/6 分割
 
-### `reposcope.eval.summary.v1`
+对 `reposcope-v1|owner/repo#issue` 计算 SHA-256 并升序排列，前 6 个进入 development，后 6 个进入 hidden。该映射在模型运行前生成，不能按成绩调整：
 
-包含每个系统的 case 覆盖数、宏平均 FileRecall@5、MRR、有效/幻觉引用数量与比例，以及在两个系统 case 完全配对时的差值。只有所有 case 都有实测 usage 时才汇总延迟、Token 和成本。
+| Slot | Case |
+| --- | --- |
+| dev-01 | `pyinvoke-invoke-issue-533` |
+| dev-02 | `tox-dev-platformdirs-issue-207` |
+| dev-03 | `hynek-structlog-issue-476` |
+| dev-04 | `dateutil-dateutil-issue-926` |
+| dev-05 | `pallets-click-issue-2819` |
+| dev-06 | `pallets-flask-issue-2267` |
+| hidden-01 | `pallets-jinja-issue-1198` |
+| hidden-02 | `pydantic-pydantic-settings-issue-441` |
+| hidden-03 | `python-hyper-h11-issue-92` |
+| hidden-04 | `pytest-dev-pluggy-issue-544` |
+| hidden-05 | `python-poetry-tomlkit-issue-261` |
+| hidden-06 | `more-itertools-more-itertools-issue-658` |
 
-版本化 JSON Schema 位于 `evals/schemas/`。JSONL 使用 UTF-8、每行一个对象、排序键、紧凑分隔符与末尾换行；读取器拒绝 BOM、重复 JSON key、NaN/Infinity、重复 ID、过大文件和非规范路径。
+若仓库、Issue 或快照失效，应废弃整个 case 并提升数据集版本，不能为了改善成绩替换个别案例。
 
-## 十二个历史 Bug 的选择条件
-
-每个槽位只能绑定一个通过人工复核的真实历史 Python Bug：
-
-1. 公开 GitHub Python 仓库，满足 RepoScope 50 MB 仓库、10 MB 索引、500 KB 单文件限制；
-2. 已关闭 Issue，存在已合并、单一目的的修复；
-3. 固定 Issue 文本与修复前 commit；
-4. 修复范围不超过 8 个文件；
-5. gold 只取修复中已在 pre-fix 快照存在的 1–5 个 `.py`/`.pyi` 生产文件；
-6. 排除测试、文档、生成物、vendor、重命名、新增/删除文件和宽泛重构；
-7. Issue 文本不得直接泄漏补丁、修复路径或修复后答案；
-8. 静态调查足以形成合理证据，不依赖执行目标仓库代码；
-9. 每个仓库最多一个 case，避免仓库风格泄漏；
-10. 策展记录可以查看修复元数据，但 runner 输入绝不能读取修复 PR、diff、fix commit 内容或修复后源码。
-
-## 6/6 分割规则
-
-先选满 12 个合格 case，再在任何模型运行前锁定分割。对规范字符串 `reposcope-v1|owner/repo#issue` 计算 SHA-256，按 digest 升序排列：前 6 个为 development，后 6 个为 hidden。结果产生后不得移动 case。
-
-Development gold 可在调试完成后公开；hidden gold 始终由独立 evaluator 保管。若仓库、Issue 或快照失效，应废弃整个 case 并重新锁定数据集版本，不能根据成绩替换。
-
-## 指标定义
+## 确定性指标
 
 对 gold 集合 `G` 与去重后的有序预测 `P`：
 
 - `FileRecall@5 = |G ∩ P[:5]| / |G|`
 - `MRR = 1 / 首个命中 G 的一基排名`，未命中为 `0`
-- 失败 case 的 FileRecall@5 与 MRR 均为 `0`，防止幸存者偏差
-- 引用有效：commit、规范路径、行区间与 excerpt 全部和 pre-fix 快照完全一致
+- 失败 case 的 FileRecall@5 与 MRR 均为 `0`
+- 引用只有在 commit、路径、行区间和 excerpt 与 pre-fix 快照完全一致时才有效
 - `citation_validity = valid / emitted`
-- `hallucinated_citations = emitted - valid`
-- `citation_hallucination_rate = hallucinated / emitted`
+- `citation_hallucination_rate = (emitted - valid) / emitted`
 - 没有引用时两个引用比例为 `null`，不能报告 100%
 
-所有宏平均保留六位小数。只有 Token 数据与明确版本化 rate card 同时存在时，结果才能包含估算成本。
+宏平均保留六位小数。只有 Token 数据和明确版本化 rate card 同时存在时才可估算成本。
 
-## 命令
+## 无模型验证命令
 
 ```powershell
-# 只验证 12 个空槽，不运行模型
-.\.venv\Scripts\python.exe -m app.evaluation.cli validate-slots evals\benchmark-slots.v1.jsonl
-
-# 验证当前 pre-split candidates；不分组、不运行模型
 .\.venv\Scripts\python.exe -m app.evaluation.cli validate-candidates evals\curation-candidates.v1.jsonl
-
-# 检查 Schema 是否与 Pydantic 契约一致
+.\.venv\Scripts\python.exe -m app.evaluation.cli validate-dataset --candidates evals\curation-candidates.v1.jsonl --cases evals\benchmark-cases.v1.jsonl --slots evals\benchmark-slots.v2.jsonl --development-gold evals\development-gold.v1.jsonl
 .\.venv\Scripts\python.exe -c "from pathlib import Path; from app.evaluation.schemas import export_schemas; assert not export_schemas(Path('evals/schemas'), check=True)"
-
-# 真实策展完成后：runner 与 scorer 分开执行
-.\.venv\Scripts\python.exe -m app.evaluation.cli run --help
-.\.venv\Scripts\python.exe -m app.evaluation.cli score --help
 ```
 
-`run` 当前只接受显式 scripted prediction，保证 Task 7 测试不连接 GitHub、模型、PostgreSQL 或任意网络。`IssueOnlyRunner` 只向 predictor 传仓库与冻结 Issue；`RepoScopeRunner` 验证本地 pre-fix 快照 digest，把副本放进 runner 自有临时目录，并在成功、异常或取消时清理。接入真实 provider 属于后续受控实验，不能把 scripted 输出当作模型成绩。
+策展者可在本机追加 `--hidden-gold local\evaluation\hidden-gold.v1.jsonl --snapshots-root local\evaluation\snapshots`，验证全部 12 个 snapshot digest 与 gold 文件。该命令仍不会调用模型。
+
+正式 `run` 与 `score` 必须同时传入完整 12-case catalog 和 `--dataset-digest-file evals\benchmark-cases.v1.sha256`；减少案例、移动 split 或修改字段都会在预测/评分前失败。内部测试使用显式 fixture 模式验证小型样例，该模式不用于 benchmark。`run` 目前接受显式 scripted prediction，用于验证输入隔离、结果契约和评分管线；它不是模型成绩。受控真实 provider 实验是锁定完成后的下一阶段，必须保持 hidden gold 对 runner 不可见。

@@ -68,6 +68,23 @@ def read_jsonl(path: Path, model: type[RowT]) -> tuple[RowT, ...]:
 
 
 def write_jsonl(path: Path, rows: tuple[BaseModel, ...]) -> None:
+    payload = canonical_jsonl_bytes(rows)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def canonical_jsonl_bytes(rows: tuple[BaseModel, ...]) -> bytes:
     identities = [_identity(item) for item in rows]
     if len(set(identities)) != len(identities):
         raise JsonlContractError("JSONL row identities must be unique")
@@ -87,19 +104,7 @@ def write_jsonl(path: Path, rows: tuple[BaseModel, ...]) -> None:
     payload = "".join(f"{record}\n" for record in records).encode("utf-8")
     if len(payload) > MAX_JSONL_BYTES:
         raise JsonlContractError("JSONL output is too large")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        temporary = None
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    return payload
 
 
 def _identity(item: BaseModel) -> tuple[str, ...]:

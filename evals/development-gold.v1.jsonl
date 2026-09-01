@@ -1,0 +1,6 @@
+{"case_id":"dateutil-dateutil-issue-926","gold_files":["dateutil/tz/tz.py"],"schema_version":"reposcope.eval.gold.v1"}
+{"case_id":"hynek-structlog-issue-476","gold_files":["src/structlog/_log_levels.py"],"schema_version":"reposcope.eval.gold.v1"}
+{"case_id":"pallets-click-issue-2819","gold_files":["src/click/core.py"],"schema_version":"reposcope.eval.gold.v1"}
+{"case_id":"pallets-flask-issue-2267","gold_files":["flask/app.py"],"schema_version":"reposcope.eval.gold.v1"}
+{"case_id":"pyinvoke-invoke-issue-533","gold_files":["invoke/tasks.py"],"schema_version":"reposcope.eval.gold.v1"}
+{"case_id":"tox-dev-platformdirs-issue-207","gold_files":["src/platformdirs/unix.py"],"schema_version":"reposcope.eval.gold.v1"}

@@ -8,9 +8,11 @@ from pathlib import Path
 import app.release_security as release_security
 from app.release_security import (
     SecretAllowlist,
+    forbidden_evaluation_artifacts,
     forbidden_tracked_paths,
     scan_bytes,
     scan_git_history,
+    scan_git_index,
     tracked_paths,
 )
 
@@ -151,3 +153,229 @@ def test_private_curation_evidence_is_ignored_and_forbidden_if_tracked() -> None
     assert ignored.returncode == 0
     assert forbidden_tracked_paths([private_path]) == [private_path]
     assert forbidden_tracked_paths(tracked_paths(root)) == []
+
+
+def test_hidden_gold_is_forbidden_even_outside_the_local_directory() -> None:
+    paths = ["evals/hidden-gold.v1.jsonl", "docs/archive/hidden-gold-old.jsonl"]
+
+    assert forbidden_tracked_paths(paths) == sorted(paths)
+
+
+def test_public_runner_artifacts_reject_answer_fields_but_development_gold_is_allowed(
+    tmp_path: Path,
+) -> None:
+    cases = tmp_path / "evals" / "benchmark-cases.v1.jsonl"
+    development_gold = tmp_path / "evals" / "development-gold.v1.jsonl"
+    cases.parent.mkdir()
+    cases.write_text('{"case_id":"case-1","gold_files":["src/a.py"]}\n', encoding="utf-8")
+    root = Path(__file__).parents[2]
+    development_gold.write_bytes(
+        (root / "evals" / "development-gold.v1.jsonl").read_bytes()
+    )
+
+    assert forbidden_evaluation_artifacts(
+        tmp_path, ["evals/benchmark-cases.v1.jsonl", "evals/development-gold.v1.jsonl"]
+    ) == ["evals/benchmark-cases.v1.jsonl:gold_files"]
+
+
+def test_development_gold_allows_only_frozen_development_case_ids(
+    tmp_path: Path,
+) -> None:
+    development_gold = tmp_path / "evals" / "development-gold.v1.jsonl"
+    development_gold.parent.mkdir()
+    development_gold.write_text(
+        '{"case_id":"pallets-jinja-issue-1198","gold_files":["src/jinja2/runtime.py"]}\n',
+        encoding="utf-8",
+    )
+
+    assert forbidden_evaluation_artifacts(
+        tmp_path, ["evals/development-gold.v1.jsonl"]
+    ) == ["evals/development-gold.v1.jsonl:development_gold_contract"]
+
+
+def test_development_gold_rejects_hidden_path_under_an_allowed_case_id(
+    tmp_path: Path,
+) -> None:
+    development_gold = tmp_path / "evals" / "development-gold.v1.jsonl"
+    development_gold.parent.mkdir()
+    development_gold.write_text(
+        '{"case_id":"pyinvoke-invoke-issue-533","gold_files":["src/jinja2/runtime.py"],"schema_version":"reposcope.eval.gold.v1"}\n',
+        encoding="utf-8",
+    )
+
+    assert forbidden_evaluation_artifacts(
+        tmp_path, ["evals/development-gold.v1.jsonl"]
+    ) == ["evals/development-gold.v1.jsonl:development_gold_contract"]
+
+
+def test_development_gold_rejects_nested_gold_fields(
+    tmp_path: Path,
+) -> None:
+    development_gold = tmp_path / "evals" / "development-gold.v1.jsonl"
+    development_gold.parent.mkdir()
+    development_gold.write_text(
+        '{"case_id":"pyinvoke-invoke-issue-533","gold_files":[{"gold_files":["src/jinja2/runtime.py"]}],"schema_version":"reposcope.eval.gold.v1"}\n',
+        encoding="utf-8",
+    )
+
+    assert forbidden_evaluation_artifacts(
+        tmp_path, ["evals/development-gold.v1.jsonl"]
+    ) == ["evals/development-gold.v1.jsonl:development_gold_contract"]
+
+
+def test_case_variant_development_gold_path_is_not_exempt(
+    tmp_path: Path,
+) -> None:
+    development_gold = tmp_path / "EVALS" / "DEVELOPMENT-GOLD.V1.JSONL"
+    development_gold.parent.mkdir()
+    development_gold.write_text(
+        '{"case_id":"pyinvoke-invoke-issue-533","gold_files":["invoke/tasks.py"]}\n',
+        encoding="utf-8",
+    )
+
+    assert forbidden_evaluation_artifacts(
+        tmp_path, ["EVALS/DEVELOPMENT-GOLD.V1.JSONL"]
+    ) == ["EVALS/DEVELOPMENT-GOLD.V1.JSONL:gold_files"]
+
+
+def test_public_eval_scan_rejects_answer_fields_under_an_alternate_case_variant_path(
+    tmp_path: Path,
+) -> None:
+    leaked = tmp_path / "EVALS" / "renamed-input.JSONL"
+    leaked.parent.mkdir()
+    leaked.write_text(
+        '{"case_id":"case-1","fix_commit_sha":"' + "a" * 40 + '"}\n',
+        encoding="utf-8",
+    )
+
+    assert forbidden_evaluation_artifacts(
+        tmp_path, ["EVALS/renamed-input.JSONL"]
+    ) == ["EVALS/renamed-input.JSONL:fix_commit_sha"]
+
+
+def test_git_history_scan_rejects_removed_evaluation_answer_fields(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "RepoScope Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    leaked = tmp_path / "evals" / "renamed-input.jsonl"
+    leaked.parent.mkdir()
+    leaked.write_text(
+        '{"case_id":"case-1","gold_files":["src/a.py"]}\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "leak fixture"], cwd=tmp_path, check=True)
+    leaked.unlink()
+    subprocess.run(["git", "commit", "-qam", "remove fixture"], cwd=tmp_path, check=True)
+
+    findings = scan_git_history(tmp_path)
+
+    assert any(
+        item.path == "evals/renamed-input.jsonl"
+        and item.rule == "forbidden_evaluation_field_gold_files"
+        for item in findings
+    )
+
+
+def test_git_history_scan_rejects_hidden_case_in_removed_development_gold(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "RepoScope Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    leaked = tmp_path / "evals" / "development-gold.v1.jsonl"
+    leaked.parent.mkdir()
+    leaked.write_text(
+        '{"case_id":"pyinvoke-invoke-issue-533","gold_files":["src/jinja2/runtime.py"],"schema_version":"reposcope.eval.gold.v1"}\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "leak fixture"], cwd=tmp_path, check=True)
+    leaked.unlink()
+    subprocess.run(["git", "commit", "-qam", "remove fixture"], cwd=tmp_path, check=True)
+
+    findings = scan_git_history(tmp_path)
+
+    assert any(
+        item.path == "evals/development-gold.v1.jsonl"
+        and item.rule == "forbidden_evaluation_field_development_gold_contract"
+        for item in findings
+    )
+
+
+def test_git_index_rejects_wrong_path_in_canonical_development_gold(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    leaked = tmp_path / "evals" / "development-gold.v1.jsonl"
+    leaked.parent.mkdir()
+    leaked.write_text(
+        '{"case_id":"pyinvoke-invoke-issue-533","gold_files":["src/jinja2/runtime.py"],"schema_version":"reposcope.eval.gold.v1"}\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+    findings = scan_git_index(tmp_path)
+
+    assert any(
+        item.path == "evals/development-gold.v1.jsonl"
+        and item.rule == "forbidden_evaluation_field_development_gold_contract"
+        for item in findings
+    )
+
+
+def test_private_path_rejection_is_case_insensitive() -> None:
+    path = "LOCAL/evaluation/curation/case/evidence.v1.json"
+
+    assert forbidden_tracked_paths([path]) == [path]
+
+
+def test_git_index_scan_cannot_be_masked_by_a_safe_working_tree_copy(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    leaked = tmp_path / "evals" / "input.jsonl"
+    leaked.parent.mkdir()
+    leaked.write_text(
+        '{"nested":{"gold_files":["src/a.py"]}}\n', encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    leaked.write_text('{"case_id":"safe"}\n', encoding="utf-8")
+
+    findings = scan_git_index(tmp_path)
+
+    assert any(
+        item.path == "evals/input.jsonl"
+        and item.rule == "forbidden_evaluation_field_gold_files"
+        for item in findings
+    )
+
+
+def test_public_eval_scan_reports_invalid_utf8_as_a_structured_violation(
+    tmp_path: Path,
+) -> None:
+    invalid = tmp_path / "evals" / "input.jsonl"
+    invalid.parent.mkdir()
+    invalid.write_bytes(b"\xff\n")
+
+    assert forbidden_evaluation_artifacts(
+        tmp_path, ["evals/input.jsonl"]
+    ) == ["evals/input.jsonl:invalid_utf8"]

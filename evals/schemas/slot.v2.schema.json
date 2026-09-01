@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "reposcope.eval.slot.v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "slot_id": {
+      "pattern": "^(dev|hidden)-0[1-6]$",
+      "title": "Slot Id",
+      "type": "string"
+    },
+    "split": {
+      "enum": [
+        "development",
+        "hidden"
+      ],
+      "title": "Split",
+      "type": "string"
+    },
+    "split_key_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Split Key Digest",
+      "type": "string"
+    },
+    "state": {
+      "const": "locked",
+      "default": "locked",
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "slot_id",
+    "split",
+    "case_id",
+    "split_key_digest"
+  ],
+  "title": "LockedBenchmarkSlot",
+  "type": "object"
+}

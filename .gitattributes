@@ -1,0 +1,2 @@
+evals/*.jsonl text eol=lf
+evals/*.sha256 text eol=lf
