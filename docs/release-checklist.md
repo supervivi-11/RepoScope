@@ -24,7 +24,7 @@
 
 ## 评测真实性
 
-- [ ] 十二个 case 均通过人工选择条件（当前 2 个合格 pre-split candidates，尚余 10 个）
+- [ ] 十二个 case 均通过人工选择条件（当前 4 个合格 pre-split candidates，尚余 8 个）
 - [x] 6/6 metadata-only 槽位保持 `unfilled`；选满 12 个前不提前分组
 - [x] pre-split 修复证据与 gold 仅保存在被忽略的 `local/evaluation/`，未提交、未传给 runner
 - [ ] 真实结果保留 case digest、模型与 rate-card 版本

@@ -4,7 +4,7 @@
 
 - `benchmark-slots.v1.jsonl` 只有 12 个 metadata-only 空槽：`dev-01`–`dev-06` 与 `hidden-01`–`hidden-06`。
 - 槽位尚未绑定仓库、Issue、修复 PR 或答案，状态统一为 `unfilled`。
-- `curation-candidates.v1.jsonl` 当前包含 2 个通过初步人工核验的 pre-split candidate；它们没有 `split`、slot 或任何修复答案字段，不能作为 benchmark case 运行。
+- `curation-candidates.v1.jsonl` 当前包含 4 个通过初步人工核验的 pre-split candidate；它们没有 `split`、slot 或任何修复答案字段，不能作为 benchmark case 运行。
 - `results-empty.v1.jsonl` 是零字节结果模板。
 - 当前没有真实模型运行、结果或 benchmark 分数；目标值不是已实现成绩。
 
@@ -14,12 +14,14 @@
 
 候选包含稳定 candidate ID、公开仓库 URL、冻结的 Issue 标题/正文、pre-fix commit 与快照 digest。状态只能是 `qualified_pending_dataset_lock`。它不包含 split、slot、case ID、修复 PR、fix commit、changed paths 或 gold。
 
-候选目录允许 1–12 条且每个仓库最多一条。`validate-candidates` 只验证契约，不会调用 runner、模型或 scorer。当前两个候选是：
+候选目录允许 1–12 条且每个仓库最多一条。`validate-candidates` 只验证契约，不会调用 runner、模型或 scorer。当前四个候选是：
 
 - [`pallets/click#2819`](https://github.com/pallets/click/issues/2819)；
+- [`pallets/flask#2267`](https://github.com/pallets/flask/issues/2267)；
+- [`pytest-dev/pluggy#544`](https://github.com/pytest-dev/pluggy/issues/544)；
 - [`python-hyper/h11#92`](https://github.com/python-hyper/h11/issues/92)。
 
-这两个名称表示“待全集锁定的候选”，不是开发集案例，也不是评测成绩。
+这四个名称表示“待全集锁定的候选”，不是开发集案例，也不是评测成绩。
 
 ## 四类数据必须物理分离
 

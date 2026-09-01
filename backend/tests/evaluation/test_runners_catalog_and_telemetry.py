@@ -85,6 +85,8 @@ def test_committed_candidates_remain_pre_split_and_runner_safe() -> None:
 
     assert [item.candidate_id for item in candidates] == [
         "pallets-click-issue-2819",
+        "pallets-flask-issue-2267",
+        "pytest-dev-pluggy-issue-544",
         "python-hyper-h11-issue-92",
     ]
     assert all("split" not in type(item).model_fields for item in candidates)
