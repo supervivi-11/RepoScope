@@ -6,7 +6,7 @@ RepoScope 是一个面向陌生 Python 仓库的 Bug 调查助手：输入公开
 
 ## English summary
 
-RepoScope investigates public Python GitHub bug issues against immutable pre-fix source snapshots. It exposes only bounded read-only tools, validates every citation deterministically, and produces a structured report. Live analysis is local-only and uses the operator's OpenAI-compatible credentials. The public demo is static. The committed demo cases and benchmark slots are placeholders, not measured results; no real-model benchmark has been run yet.
+RepoScope investigates public Python GitHub bug issues against immutable pre-fix source snapshots. It exposes only bounded read-only tools, validates every citation deterministically, and produces a structured report. Live analysis is local-only and uses the operator's OpenAI-compatible credentials. The public demo is static. Twelve historical benchmark cases are deterministically locked into a 6/6 development/hidden split, but no real-model benchmark has been run and no score is claimed.
 
 ## 它解决什么问题
 
@@ -87,20 +87,21 @@ Task 8 的实际命令、环境与观察结果见 [发布验证记录](docs/rele
 
 ## 可复现评测骨架
 
-评测仍只提供离线、无付费调用的契约与 runner。十二个数据槽保持 `unfilled`；当前有 6 个通过初步人工核验、尚未分组的候选，仍需选满 12 个后才能锁定 6/6 分割。以下验证不会输出成绩：
+12 个历史 Python Bug 已完成元数据核验，并按公开的 SHA-256 规则确定性锁定为 6 个 development case 与 6 个 hidden case。公开仓库只包含 runner-safe case、锁定映射和 development gold；hidden gold、修复证据与 pre-fix 快照都留在被 Git 忽略的本地目录。数据集指纹为 `de76c423ffe936743f979f35cc634caed064e571b3f5c9563b219ac5025ceea7`。以下验证不会调用模型，也不会输出成绩：
 
 ```powershell
 .\.venv\Scripts\python.exe -m app.evaluation.cli validate-slots evals\benchmark-slots.v1.jsonl
 .\.venv\Scripts\python.exe -m app.evaluation.cli validate-candidates evals\curation-candidates.v1.jsonl
+.\.venv\Scripts\python.exe -m app.evaluation.cli validate-dataset --candidates evals\curation-candidates.v1.jsonl --cases evals\benchmark-cases.v1.jsonl --slots evals\benchmark-slots.v2.jsonl --development-gold evals\development-gold.v1.jsonl
 .\.venv\Scripts\python.exe -c "from pathlib import Path; from app.evaluation.schemas import export_schemas; assert not export_schemas(Path('evals/schemas'), check=True)"
 ```
 
 完成合规的数据策展后，分别运行两个系统，再把 gold 仅交给 scorer：
 
 ```powershell
-.\.venv\Scripts\python.exe -m app.evaluation.cli run --system issue_only --cases evals\cases.v1.jsonl --scripted-predictions local\issue-only-script.v1.jsonl --output local\issue-only-results.v1.jsonl
-.\.venv\Scripts\python.exe -m app.evaluation.cli run --system reposcope --cases evals\cases.v1.jsonl --scripted-predictions local\reposcope-script.v1.jsonl --snapshots-root local\snapshots --output local\reposcope-results.v1.jsonl
-.\.venv\Scripts\python.exe -m app.evaluation.cli score --cases evals\cases.v1.jsonl --gold local\gold.v1.jsonl --results local\results.v1.jsonl --snapshots-root local\snapshots --output local\summary.v1.json
+.\.venv\Scripts\python.exe -m app.evaluation.cli run --system issue_only --split development --cases evals\benchmark-cases.v1.jsonl --dataset-digest-file evals\benchmark-cases.v1.sha256 --scripted-predictions local\evaluation\issue-only-script.v1.jsonl --output local\evaluation\issue-only-results.v1.jsonl
+.\.venv\Scripts\python.exe -m app.evaluation.cli run --system reposcope --split development --cases evals\benchmark-cases.v1.jsonl --dataset-digest-file evals\benchmark-cases.v1.sha256 --scripted-predictions local\evaluation\reposcope-script.v1.jsonl --snapshots-root local\evaluation\snapshots --output local\evaluation\reposcope-results.v1.jsonl
+.\.venv\Scripts\python.exe -m app.evaluation.cli score --split development --cases evals\benchmark-cases.v1.jsonl --dataset-digest-file evals\benchmark-cases.v1.sha256 --gold evals\development-gold.v1.jsonl --results local\evaluation\issue-only-results.v1.jsonl --snapshots-root local\evaluation\snapshots --output local\evaluation\issue-only-summary.v2.json
 ```
 
 这里的内置适配器是确定性的 scripted runner，用来验证输入隔离、结果契约和评分管线；它不声称替代尚未执行的真实模型实验。数据选择、分割、指标定义和防答案泄漏规则见 [evals/README.md](evals/README.md)。

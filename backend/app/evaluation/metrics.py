@@ -12,7 +12,7 @@ from .contracts import (
     BenchmarkCase,
     BenchmarkGold,
     BenchmarkResult,
-    EvaluationSummary,
+    EvaluationSummaryV2,
     SystemMetrics,
 )
 
@@ -27,7 +27,7 @@ def score_benchmark(
     gold: tuple[BenchmarkGold, ...],
     results: tuple[BenchmarkResult, ...],
     indexes: dict[str, PythonRepositoryIndex],
-) -> EvaluationSummary:
+) -> EvaluationSummaryV2:
     if not cases:
         raise ValueError("at least one benchmark case is required")
     case_by_id = _unique(cases, "case_id", "case")
@@ -44,6 +44,9 @@ def score_benchmark(
         grouped[result.system][result.case_id] = result
     if any(set(grouped[system]) != set(case_by_id) for system in systems):
         raise ValueError("exactly one result per case and system is required")
+    result_digests = {result.dataset_digest for result in results}
+    if len(result_digests) != 1:
+        raise ValueError("all results must share one complete dataset digest")
     for case_id, case in case_by_id.items():
         index = indexes.get(case_id)
         if index is None or index.snapshot.commit_sha != case.pre_fix_commit_sha:
@@ -119,8 +122,12 @@ def score_benchmark(
         )
     by_system = {item.system: item for item in aggregates}
     paired = "issue_only" in by_system and "reposcope" in by_system
-    return EvaluationSummary(
-        schema_version="reposcope.eval.summary.v1",
+    case_splits = {case.split for case in cases}
+    summary_split = next(iter(case_splits)) if len(case_splits) == 1 else "all"
+    return EvaluationSummaryV2(
+        schema_version="reposcope.eval.summary.v2",
+        split=summary_split,
+        dataset_digest=next(iter(result_digests)),
         case_count=len(cases),
         systems=tuple(aggregates),
         file_recall_at_5_delta=(

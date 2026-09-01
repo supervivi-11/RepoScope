@@ -9,6 +9,14 @@
 
 本记录只写实际观察结果。没有运行真实模型或付费 API，没有提交分析任务，没有运行真实 benchmark，也没有生成或暗示 benchmark 分数。
 
+## 后续评测数据锁定（2026-09-01）
+
+Task 8 发布候选验证之后，12 个历史 Python Bug 已全部完成元数据核验。锁定命令仅根据公开 candidate 字段计算 SHA-256 顺序，生成 6/6 case 与 slot v2；本地验证额外确认 12 个 snapshot digest 和 gold 文件均对应修复前源码。完整数据集 digest 为 `de76c423ffe936743f979f35cc634caed064e571b3f5c9563b219ac5025ceea7`。
+
+该步骤没有运行模型、runner 或 scorer，因此仍然没有任何可报告成绩。公开仓库只保留 development gold；hidden gold、修复元数据和快照保持 Git 忽略。
+
+锁定及审查修复后的回归验证为：后端 `309 passed, 1 skipped`；前端 65 个 Vitest、typecheck、静态/实时构建通过；Chromium live 1 个、static 3 个场景通过；Schema 无漂移；公开与私有全量数据校验、Git 历史/暂存文件安全扫描通过。跳过项仍是本机 Windows 不具备符号链接创建能力的既有平台分支。
+
 ## 环境
 
 - Windows + PowerShell；Docker Desktop 29.4.2 / Compose 5.1.3；
@@ -57,7 +65,7 @@ Playwright 自带 `webServer` 在本机 Windows 上无法可靠结束预览进�
 .\.venv\Scripts\python.exe -m app.evaluation.cli validate-slots evals\benchmark-slots.v1.jsonl
 ```
 
-观察结果：限制生成器和评测 Schema 均无漂移；目录验证输出 `validated 12 metadata-only slots (6 development, 6 hidden)`。十二个槽位仍为 `unfilled`，未执行真实 runner 或 scorer。
+Task 8 当时的观察结果：限制生成器和评测 Schema 均无漂移；目录验证输出 `validated 12 metadata-only slots (6 development, 6 hidden)`。后续策展已通过 slot v2 锁定，见本页顶部的后续状态；仍未执行真实 runner 或 scorer。
 
 ## 发布密钥扫描
 
@@ -70,7 +78,7 @@ Playwright 自带 `webServer` 在本机 Windows 上无法可靠结束预览进�
 
 观察结果：`release security scan passed: Git history and artifacts contain no unreviewed high-confidence secrets`。
 
-扫描覆盖完整 Git 历史、当前跟踪文件与 `frontend/dist`。发现时只输出来源、路径、行号、规则和截断摘要，不输出匹配值。测试中的合成凭据只按“路径 + 规则 + SHA-256”精确放行。超过 5 MiB 扫描上限的文件或历史 blob 会产生 `scan_limit_exceeded` 并令命令失败，不会被静默跳过。扫描同时拒绝跟踪 `.env`、数据库、构建/Playwright 产物、`evals/gold/` 和本地结果目录。
+扫描覆盖完整 Git 历史、Git index（防止安全工作树掩盖已暂存泄漏）、当前跟踪文件与 `frontend/dist`。发现时只输出来源、路径、行号、规则和截断摘要，不输出匹配值。测试中的合成凭据只按“路径 + 规则 + SHA-256”精确放行。超过 5 MiB 扫描上限的文件或历史 blob 会产生 `scan_limit_exceeded` 并令命令失败，不会被静默跳过。扫描同时拒绝跟踪 `.env`、数据库、构建/Playwright 产物、本地结果、任意位置的 hidden gold，以及除公开 development gold 外任何评测 JSONL 中嵌套或顶层的修复答案字段。
 
 ## Docker Compose、真实 PostgreSQL 与迁移
 
@@ -116,8 +124,8 @@ docker compose -p reposcope_task8 exec -T frontend wget -q -O - http://127.0.0.1
 
 ## 尚未执行或不构成通过项
 
-- 未运行真实模型、真实历史 12-case benchmark、Issue-only/RepoScope 实验或 scorer；
-- 未策展 12 个真实历史 Bug，6/6 仍只是锁定的 metadata-only 槽位；
+- 未运行真实模型、Issue-only/RepoScope 实验或 scorer，因此不存在真实 benchmark 分数；
+- 12 个真实历史 Bug 已策展并锁定为 6/6；尚未执行它们的模型预测；
 - 三个公开 Demo 仍是显著标注的产品流程占位数据，不是真实历史导出；
 - 未制作 60 秒 GIF 或 3–5 分钟视频；仓库仅提供录制与泄密检查指南；
 - 未验证真实模型供应商、真实 GitHub 限流或付费成本；

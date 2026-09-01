@@ -5,7 +5,7 @@
 ## 代码与契约
 
 - [x] 分支从预期 Task 7 commit `a8cc704` 继续，Task 8 提交后工作树干净
-- [x] 后端全量测试在 warnings-as-errors 下通过（276 passed，1 skipped）
+- [x] 后端全量测试在 warnings-as-errors 下通过（309 passed，1 skipped）
 - [x] 前端 Vitest、typecheck、静态/实时构建通过
 - [x] Playwright Chromium 场景实际执行，不只是 `--list`（live 1，static 3）
 - [x] 数据库从空库迁移到 head（`20260830_0001`）
@@ -24,9 +24,10 @@
 
 ## 评测真实性
 
-- [ ] 十二个 case 均通过人工选择条件（当前 6 个合格 pre-split candidates，尚余 6 个）
-- [x] 6/6 metadata-only 槽位保持 `unfilled`；选满 12 个前不提前分组
-- [x] pre-split 修复证据与 gold 仅保存在被忽略的 `local/evaluation/`，未提交、未传给 runner
+- [x] 十二个 case 均通过人工选择条件，并保留 runner-safe 的公开元数据
+- [x] 12 个 case 按 `reposcope-v1|owner/repo#issue` 的 SHA-256 顺序确定性锁定为 6/6
+- [x] development gold 已公开；hidden gold、修复证据与源码快照仅保存在被忽略的 `local/evaluation/`，未传给 runner
+- [x] 完整数据集 digest 固定为 `de76c423ffe936743f979f35cc634caed064e571b3f5c9563b219ac5025ceea7`
 - [ ] 真实结果保留 case digest、模型与 rate-card 版本
 - [x] README 中的所有数字来自可复现结果或明确写为目标/未执行
 - [x] 未运行真实评测，所有页面继续明确写“未执行/无成绩”

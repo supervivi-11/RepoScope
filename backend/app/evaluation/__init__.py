@@ -8,7 +8,9 @@ from .contracts import (
     CurationCandidate,
     EvaluationPrediction,
     EvaluationSummary,
+    EvaluationSummaryV2,
     EvaluationUsage,
+    LockedBenchmarkSlot,
 )
 
 __all__ = [
@@ -19,5 +21,7 @@ __all__ = [
     "CurationCandidate",
     "EvaluationPrediction",
     "EvaluationSummary",
+    "EvaluationSummaryV2",
     "EvaluationUsage",
+    "LockedBenchmarkSlot",
 ]

@@ -84,12 +84,18 @@ def test_committed_candidates_remain_pre_split_and_runner_safe() -> None:
     candidates = load_candidate_catalog(root / "evals" / "curation-candidates.v1.jsonl")
 
     assert [item.candidate_id for item in candidates] == [
+        "dateutil-dateutil-issue-926",
         "hynek-structlog-issue-476",
+        "more-itertools-more-itertools-issue-658",
         "pallets-click-issue-2819",
         "pallets-flask-issue-2267",
         "pallets-jinja-issue-1198",
+        "pydantic-pydantic-settings-issue-441",
+        "pyinvoke-invoke-issue-533",
         "pytest-dev-pluggy-issue-544",
         "python-hyper-h11-issue-92",
+        "python-poetry-tomlkit-issue-261",
+        "tox-dev-platformdirs-issue-207",
     ]
     assert all("split" not in type(item).model_fields for item in candidates)
     assert all("gold_files" not in type(item).model_fields for item in candidates)
