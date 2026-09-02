@@ -387,7 +387,7 @@ def _optional_int(value: object) -> int | None:
 
 
 def _deepseek_json_schema(response_model: type[ResponseT]) -> dict[str, Any]:
-    """Convert nullable references to DeepSeek's supported typed-union form."""
+    """Inline references only where DeepSeek requires typed `anyOf` branches."""
 
     schema = response_model.model_json_schema()
     definitions = schema.get("$defs") or {}
@@ -397,29 +397,24 @@ def _deepseek_json_schema(response_model: type[ResponseT]) -> dict[str, Any]:
             return [convert(item) for item in node]
         if not isinstance(node, dict):
             return node
-        any_of = node.get("anyOf")
-        if isinstance(any_of, list) and len(any_of) == 2:
-            nulls = [item for item in any_of if item == {"type": "null"}]
-            non_nulls = [item for item in any_of if item != {"type": "null"}]
-            if len(nulls) == 1 and len(non_nulls) == 1:
-                non_null = non_nulls[0]
-                if isinstance(non_null, dict) and set(non_null) == {"$ref"}:
-                    reference = non_null["$ref"]
+        converted: dict[str, object] = {}
+        for key, value in node.items():
+            if key != "anyOf" or not isinstance(value, list):
+                converted[key] = convert(value)
+                continue
+            branches: list[object] = []
+            for branch in value:
+                if isinstance(branch, dict) and set(branch) == {"$ref"}:
+                    reference = branch["$ref"]
                     prefix = "#/$defs/"
                     if isinstance(reference, str) and reference.startswith(prefix):
                         target = definitions.get(reference[len(prefix) :])
                         if isinstance(target, dict):
-                            converted = convert(target)
-                            if isinstance(converted, dict):
-                                result = dict(converted)
-                                value_type = result.get("type")
-                                if isinstance(value_type, str):
-                                    result["type"] = [value_type, "null"]
-                                    for key, value in node.items():
-                                        if key != "anyOf":
-                                            result[key] = convert(value)
-                                    return result
-        return {key: convert(value) for key, value in node.items()}
+                            branches.append(convert(target))
+                            continue
+                branches.append(convert(branch))
+            converted[key] = branches
+        return converted
 
     converted_schema = convert(schema)
     if not isinstance(converted_schema, dict):

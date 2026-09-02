@@ -35,13 +35,15 @@ def _understanding() -> IssueUnderstanding:
     )
 
 
-def test_deepseek_schema_rewrites_nullable_reference_without_weakening_contract() -> None:
+def test_deepseek_schema_types_nullable_reference_without_weakening_contract() -> None:
     schema = _deepseek_json_schema(AnalysisReport)
     primary = schema["properties"]["primary_hypothesis"]
 
-    assert "anyOf" not in primary
-    assert primary["type"] == ["object", "null"]
-    assert "statement" in primary["properties"]
+    assert len(primary["anyOf"]) == 2
+    assert primary["anyOf"][1] == {"type": "null"}
+    assert primary["anyOf"][0]["type"] == "object"
+    assert "statement" in primary["anyOf"][0]["properties"]
+    assert "$ref" not in primary["anyOf"][0]
     assert schema["additionalProperties"] is False
 
 
