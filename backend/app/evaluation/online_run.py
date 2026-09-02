@@ -153,11 +153,15 @@ async def run_paired_predictions(
     reposcope: list[BenchmarkResult] = []
     for case in cases:
         issue_result = await execute("issue_only", case, None)
+        _validate_single_result(issue_result, case, "issue_only", dataset_digest)
+        if issue_result.status != "ok":
+            raise EvaluationRunAbort("Issue-only prediction failed safely.")
         repo_result = await execute(
             "reposcope", case, snapshots_root / case.case_id
         )
-        _validate_single_result(issue_result, case, "issue_only", dataset_digest)
         _validate_single_result(repo_result, case, "reposcope", dataset_digest)
+        if repo_result.status != "ok":
+            raise EvaluationRunAbort("RepoScope prediction failed safely.")
         issue_only.append(issue_result)
         reposcope.append(repo_result)
     return tuple(issue_only), tuple(reposcope)
@@ -593,11 +597,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    except ModelGatewayError:
-        print("evaluation failed safely: provider_preflight_failed", file=sys.stderr)
-        return 2
     except EvaluationRunAbort:
         print("evaluation failed safely: run_safety_abort", file=sys.stderr)
+        return 2
+    except ModelGatewayError:
+        print("evaluation failed safely: provider_preflight_failed", file=sys.stderr)
         return 2
     except ValueError:
         print("evaluation failed safely: input_validation_failed", file=sys.stderr)

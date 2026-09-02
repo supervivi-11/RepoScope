@@ -10,9 +10,9 @@
 
 **2:30–3:20 安全。** 不执行目标代码，不安装依赖，无 Shell/写工具；URL/codeload allowlist、防 ZIP Slip/符号链接/超限；固定 commit；日志和公开事件做凭据清理。
 
-**3:20–4:20 评测。** 12 个历史 Bug 计划按 6/6 划分。Runner 只看 pre-fix case，gold 只给 scorer。指标是 FileRecall@5、MRR 和确定性引用有效率。当前槽位尚未策展、没有真实成绩，这一点公开写明。
+**3:20–4:20 评测。** 12 个历史 Bug 已确定性按 6/6 划分。Runner 只看 pre-fix case，gold 只给 scorer。首轮真实 development 结果是 Issue-only FileRecall@5 `0.666667`、RepoScope `0.000000`；应主动解释证据没有进入最终报告的失败，以及为什么没有运行 hidden。
 
-**4:20–5:00 取舍。** 公网只放预生成 Demo，避免开放密钥成本；v1 不自动改代码或运行测试，以可解释、可复现和安全为优先。下一步是 Task 8 集成验证，而不是增加功能。
+**4:20–5:00 取舍。** 公网只放预生成 Demo，避免开放密钥成本；v1 不自动改代码或运行测试，以可解释、可复现和安全为优先。下一步是用 evidence ID 连接工具证据与报告，并先在 development 重测，而不是提前运行 hidden。
 
 ## 十个常见问题
 

@@ -7,7 +7,7 @@
 - `benchmark-slots.v2.jsonl` 保存确定性的 6/6 锁定映射；`benchmark-slots.v1.jsonl` 仅作为 Task 7 的空槽历史契约保留，不再表示当前状态。
 - `development-gold.v1.jsonl` 公开 6 个开发集答案；hidden gold、修复证据和源码快照只存在于被 Git 忽略的 `local/evaluation/`。
 - `benchmark-cases.v1.sha256` 固定完整数据集指纹：`de76c423ffe936743f979f35cc634caed064e571b3f5c9563b219ac5025ceea7`。
-- DeepSeek Flash 的 development-only 在线 runner、逐调用 usage 账本和离线评分器已经实现并通过假模型测试；尚未执行真实模型，因此本节仍不声明 benchmark 分数、Token、成本或胜负结论。
+- DeepSeek Flash 的 development-only 在线 runner 已于 2026-09-02 完成真实 6-case 运行。Issue-only FileRecall@5 为 `0.666667`，RepoScope 为 `0.000000`；完整失败分析和成本见 `docs/evaluations/deepseek-v4-flash-development-v1.md`。Hidden 未运行。
 
 ## 数据与答案必须物理分离
 
@@ -99,6 +99,8 @@ API Key 只读取当前进程的 `REPOSCOPE_DEEPSEEK_API_KEY` 环境变量，不
 .\.venv\Scripts\python.exe -m app.evaluation.development_score --cases evals\benchmark-cases.v1.jsonl --dataset-digest-file evals\benchmark-cases.v1.sha256 --snapshots-root local\evaluation\snapshots --prediction-directory evals\runs\deepseek-v4-flash-development-v1 --development-gold evals\development-gold.v1.jsonl --output evals\runs\deepseek-v4-flash-development-v1\summary.v2.json
 ```
 
-第一条命令先做五种合成 Schema 兼容性预检，再按每个 case 的 Issue-only → RepoScope 顺序运行；预检不计入两组成绩，但保留在 call ledger。第二条命令验证 prediction manifest 和所有 artifact digest 后才读取 development gold，全程不会调用模型。`hidden` 和 `all` 不被在线命令接受。
+第一条命令先做五种合成 Schema 兼容性预检，再按每个 case 的 Issue-only → RepoScope 顺序运行；预检不计入两组成绩，但保留在 call ledger。结构化 Schema 错误最多重试 2 次，失败尝试仍计入用量；连续失败或非重试型错误会终止整轮。第二条命令验证 prediction manifest 和所有 artifact digest 后才读取 development gold，全程不会调用模型。`hidden` 和 `all` 不被在线命令接受。
+
+本次真实结果位于 `evals/runs/deepseek-v4-flash-development-v1/`。它证明管线可运行，但效果未达到 hidden 门槛；不得把 `null` 引用比例描述为 100% 有效，也不得宣称 RepoScope 优于 Issue-only。
 
 原有 `app.evaluation.cli run` 仍是确定性的 scripted fixture runner，用于无模型测试输入隔离、结果契约和评分管线；其输出不是模型成绩。

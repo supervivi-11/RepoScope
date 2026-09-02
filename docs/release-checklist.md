@@ -28,9 +28,9 @@
 - [x] 12 个 case 按 `reposcope-v1|owner/repo#issue` 的 SHA-256 顺序确定性锁定为 6/6
 - [x] development gold 已公开；hidden gold、修复证据与源码快照仅保存在被忽略的 `local/evaluation/`，未传给 runner
 - [x] 完整数据集 digest 固定为 `de76c423ffe936743f979f35cc634caed064e571b3f5c9563b219ac5025ceea7`
-- [ ] 真实结果保留 case digest、模型与 rate-card 版本
+- [x] 真实结果保留 case digest、模型与 rate-card 版本
 - [x] README 中的所有数字来自可复现结果或明确写为目标/未执行
-- [x] 未运行真实评测，所有页面继续明确写“未执行/无成绩”
+- [x] 真实 development 评测及失败结果已公开；没有运行 hidden，也没有宣称优于基线
 
 ## 作品集
 

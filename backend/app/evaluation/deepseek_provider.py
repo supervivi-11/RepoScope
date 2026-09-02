@@ -23,7 +23,6 @@ from app.agent.gateway import (
     PermanentModelError,
     RetryableModelSchemaError,
     ResponseT,
-    TransientModelError,
 )
 
 from .real_contracts import DeepSeekRunConfig, ProviderCallUsage
@@ -54,6 +53,14 @@ class TokenBudgetExceeded(EvaluationRunAbort):
 
 
 class UsageUnverifiable(EvaluationRunAbort):
+    pass
+
+
+class ProviderCallUnverifiable(EvaluationRunAbort):
+    pass
+
+
+class OutputBudgetExhausted(EvaluationRunAbort):
     pass
 
 
@@ -90,8 +97,12 @@ class InMemoryCallLedger:
             self._exhausted = True
             raise TokenBudgetExceeded("The fixed evaluation token budget was exceeded.")
 
-    def ensure_can_start(self) -> None:
-        if self._exhausted:
+    def ensure_can_start(self, *, reserved_tokens: int = 0) -> None:
+        if type(reserved_tokens) is not int or reserved_tokens < 0:
+            raise ValueError("reserved_tokens must be a non-negative integer")
+        known_total = sum(item.total_tokens or 0 for item in self._records)
+        if self._exhausted or known_total + reserved_tokens > self._max_total_tokens:
+            self._exhausted = True
             raise TokenBudgetExceeded("The fixed evaluation token budget was exceeded.")
 
 
@@ -168,7 +179,6 @@ class DeepSeekEvaluationGateway:
         context: dict[str, Any],
         attempt: int = 1,
     ) -> ResponseT:
-        self._ledger.ensure_can_start()
         wire_schema = _deepseek_json_schema(response_model)
         structured = self._model.with_structured_output(
             wire_schema,
@@ -193,6 +203,13 @@ class DeepSeekEvaluationGateway:
                 ),
             ),
         )
+        self._ledger.ensure_can_start(
+            reserved_tokens=_request_token_reservation(
+                wire_schema=wire_schema,
+                messages=messages,
+                max_output_tokens=self._configuration.max_output_tokens,
+            )
+        )
         started_at = datetime.now(UTC)
         started_counter = perf_counter()
         try:
@@ -207,7 +224,9 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code="schema_error",
             )
-            raise SchemaUnverifiable("The model response failed schema validation.") from exc
+            raise ProviderCallUnverifiable(
+                "The provider response cannot prove usage or schema validity."
+            ) from exc
         except (
             TimeoutError,
             ConnectionError,
@@ -225,8 +244,8 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code="provider_transient",
             )
-            raise TransientModelError(
-                "The model provider is temporarily unavailable."
+            raise ProviderCallUnverifiable(
+                "The model provider failed without verifiable usage."
             ) from exc
         except ModelGatewayError:
             self._append_record(
@@ -260,14 +279,16 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code="schema_error",
             )
-            raise SchemaUnverifiable("The model returned an unexpected envelope.")
+            raise ProviderCallUnverifiable(
+                "The model returned an unverifiable response envelope."
+            )
         raw = result.get("raw")
         parsing_error = result.get("parsing_error")
         if parsing_error is not None:
             safe_error_code = _schema_error_code(
                 raw, self._configuration.max_output_tokens
             )
-            self._append_record(
+            provenance_valid = self._append_record(
                 phase=phase,
                 attempt=attempt,
                 started_at=started_at,
@@ -276,6 +297,14 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code=safe_error_code,
             )
+            if not provenance_valid:
+                raise ProviderCallUnverifiable(
+                    "The failed schema response lacks verifiable usage or model provenance."
+                ) from parsing_error
+            if safe_error_code == "output_budget_exhausted":
+                raise OutputBudgetExhausted(
+                    "The model exhausted the fixed per-request output budget."
+                ) from parsing_error
             raise SchemaUnverifiable("The model response failed schema validation.") from parsing_error
         parsed = result.get("parsed")
         try:
@@ -288,7 +317,7 @@ class DeepSeekEvaluationGateway:
             safe_error_code = _schema_error_code(
                 raw, self._configuration.max_output_tokens
             )
-            self._append_record(
+            provenance_valid = self._append_record(
                 phase=phase,
                 attempt=attempt,
                 started_at=started_at,
@@ -297,6 +326,14 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code=safe_error_code,
             )
+            if not provenance_valid:
+                raise ProviderCallUnverifiable(
+                    "The failed schema response lacks verifiable usage or model provenance."
+                ) from exc
+            if safe_error_code == "output_budget_exhausted":
+                raise OutputBudgetExhausted(
+                    "The model exhausted the fixed per-request output budget."
+                ) from exc
             raise SchemaUnverifiable("The model returned an unexpected schema.") from exc
         usage_valid = self._append_record(
             phase=phase,
@@ -387,7 +424,12 @@ class DeepSeekEvaluationGateway:
             safe_error_code=safe_error_code,
         )
         self._ledger.append(record)
-        return usage_valid
+        return (
+            usage_valid
+            and input_tokens is not None
+            and output_tokens is not None
+            and returned_model is not None
+        )
 
 
 def _optional_int(value: object) -> int | None:
@@ -396,6 +438,26 @@ def _optional_int(value: object) -> int | None:
     if type(value) is not int or value < 0:
         raise ModelSchemaError("The provider returned invalid token usage.")
     return value
+
+
+def _request_token_reservation(
+    *,
+    wire_schema: dict[str, Any],
+    messages: tuple[tuple[str, str], ...],
+    max_output_tokens: int,
+) -> int:
+    """Conservatively reserve UTF-8 request bytes plus protocol and output space."""
+
+    request_bytes = len(
+        json.dumps(
+            {"schema": wire_schema, "messages": messages},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    protocol_reserve = 4096
+    return request_bytes + protocol_reserve + max_output_tokens
 
 
 def _deepseek_json_schema(response_model: type[ResponseT]) -> dict[str, Any]:

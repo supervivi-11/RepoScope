@@ -195,6 +195,33 @@ def test_online_cli_reports_safe_error_without_traceback(
     assert "Traceback" not in captured.err
 
 
+def test_online_cli_classifies_exhausted_schema_retry_as_run_abort(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    import app.evaluation.online_run as module
+    from app.evaluation.deepseek_provider import SchemaUnverifiable
+
+    async def fail_safely(args):
+        raise SchemaUnverifiable("schema retries exhausted")
+
+    monkeypatch.setattr(module, "install_gold_read_guard", lambda *args: None)
+    monkeypatch.setattr(module, "_run_online", fail_safely)
+
+    assert module.main(
+        [
+            "--cases",
+            "cases.jsonl",
+            "--dataset-digest-file",
+            "cases.sha256",
+            "--snapshots-root",
+            "snapshots",
+            "--output-directory",
+            "output",
+        ]
+    ) == 2
+    assert capsys.readouterr().err == "evaluation failed safely: run_safety_abort\n"
+
+
 def test_gold_read_guard_fails_closed_in_online_process(tmp_path: Path) -> None:
     gold = tmp_path / "development-gold.v1.jsonl"
     gold.write_text("must not be read", encoding="utf-8")
@@ -417,7 +444,9 @@ def test_complete_manifest_rejects_empty_ledger_and_failed_results(tmp_path: Pat
         )
 
 
-def test_complete_validation_accepts_bounded_successful_schema_retry() -> None:
+def test_complete_manifest_accepts_bounded_successful_schema_retry(
+    tmp_path: Path,
+) -> None:
     case_ids = tuple(f"development-case-{number}" for number in range(1, 7))
     ledger = _with_schema_retry(_ledger(case_ids), index=5)
     original = _result(case_ids[0], "issue_only")
@@ -436,15 +465,31 @@ def test_complete_validation_accepts_bounded_successful_schema_retry() -> None:
     )
     reposcope_results = tuple(_result(case_id, "reposcope") for case_id in case_ids)
 
-    validate_complete_prediction_evidence(
+    manifest = write_prediction_artifacts(
+        output_directory=tmp_path,
+        run_id="20260902T010203Z-deepseek-v4-flash",
         configuration=DeepSeekRunConfig.approved(),
         dataset_digest=DATASET_DIGEST,
-        issue_only=issue_results,
-        reposcope=reposcope_results,
+        issue_only_results=issue_results,
+        reposcope_results=reposcope_results,
         call_usage=ledger,
+        reproduction_commands=("predict", "score"),
+        reposcope_commit="a" * 40,
+        dependency_versions=tuple(
+            DependencyVersion(name=name, version="test")
+            for name in REQUIRED_DEPENDENCIES
+        ),
+        execution_order=tuple(
+            f"{case_id}:{system}"
+            for case_id in case_ids
+            for system in ("issue_only", "reposcope")
+        ),
         started_at=datetime(2026, 9, 2, 12, 0, tzinfo=UTC),
         finished_at=datetime(2026, 9, 2, 12, 1, tzinfo=UTC),
     )
+
+    assert manifest.completion_status == "complete"
+    assert len(read_jsonl(tmp_path / "call-usage.v1.jsonl", ProviderCallUsage)) == 18
 
 
 @pytest.mark.parametrize(
@@ -503,6 +548,64 @@ async def test_predictions_run_in_fixed_paired_order_for_six_cases() -> None:
     ]
     assert all(snapshot is None for system, _, snapshot in calls if system == "issue_only")
     assert all(snapshot is not None for system, _, snapshot in calls if system == "reposcope")
+
+
+@pytest.mark.parametrize(
+    ("failed_system", "expected_calls"),
+    (
+        ("issue_only", ("issue_only",)),
+        ("reposcope", ("issue_only", "reposcope")),
+    ),
+)
+@pytest.mark.anyio
+async def test_paired_predictions_stop_after_first_failed_result(
+    failed_system: str, expected_calls: tuple[str, ...]
+) -> None:
+    root = _root()
+    cases, digest = load_development_inputs(
+        cases_path=root / "evals" / "benchmark-cases.v1.jsonl",
+        digest_path=root / "evals" / "benchmark-cases.v1.sha256",
+        snapshots_root=root / "local" / "evaluation" / "snapshots",
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def execute(system, case, snapshot):
+        calls.append((system, case.case_id))
+        result = _result(case.case_id, system)
+        if system == failed_system:
+            return result.model_copy(
+                update={"status": "failed", "safe_error_code": "runner_failure"}
+            )
+        return result
+
+    from app.evaluation.errors import EvaluationRunAbort
+
+    with pytest.raises(EvaluationRunAbort):
+        await run_paired_predictions(
+            cases=cases,
+            dataset_digest=digest,
+            snapshots_root=root / "local" / "evaluation" / "snapshots",
+            execute=execute,
+        )
+
+    assert calls == [(system, cases[0].case_id) for system in expected_calls]
+
+
+def test_complete_validation_rejects_total_tokens_above_hard_cap() -> None:
+    case_ids = tuple(f"development-case-{number}" for number in range(1, 7))
+    ledger = list(_ledger(case_ids))
+    ledger[0] = ledger[0].model_copy(update={"input_tokens": 2_500_000})
+
+    with pytest.raises(ValueError, match="fixed token budget"):
+        validate_complete_prediction_evidence(
+            configuration=DeepSeekRunConfig.approved(),
+            dataset_digest=DATASET_DIGEST,
+            issue_only=tuple(_result(case_id, "issue_only") for case_id in case_ids),
+            reposcope=tuple(_result(case_id, "reposcope") for case_id in case_ids),
+            call_usage=tuple(ledger),
+            started_at=datetime(2026, 9, 2, 12, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 9, 2, 12, 1, tzinfo=UTC),
+        )
 
 
 @pytest.mark.anyio

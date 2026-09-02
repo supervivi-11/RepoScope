@@ -53,6 +53,8 @@ API 与 worker 是不同进程，因此 v1 不提供容易误导的进程内 `/m
 
 ## 评测架构
 
+真实 DeepSeek Flash development 运行的可复现结果和失败分析见 [评测报告](evaluations/deepseek-v4-flash-development-v1.md)。当前架构能完成隔离预测与确定性评分，但首轮结果暴露了“调查工具证据未稳定进入最终报告”的缺口，hidden 集因此保持未运行。
+
 ```mermaid
 flowchart LR
   CASE[case.v1 JSONL] --> I[Issue-only runner]

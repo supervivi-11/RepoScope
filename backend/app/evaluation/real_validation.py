@@ -58,6 +58,8 @@ def validate_complete_prediction_evidence(
     )
     if tuple(item.call_id for item in call_usage) != expected_call_ids:
         raise ValueError("provider call ledger must be complete and ordered")
+    if sum(item.total_tokens or 0 for item in call_usage) > configuration.max_total_tokens:
+        raise ValueError("provider call ledger exceeds the fixed token budget")
     if any(
         item.requested_model != configuration.requested_model
         or item.input_tokens is None

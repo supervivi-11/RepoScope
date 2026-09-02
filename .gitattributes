@@ -1,2 +1,5 @@
 evals/*.jsonl text eol=lf
 evals/*.sha256 text eol=lf
+evals/runs/**/*.json text eol=lf
+evals/runs/**/*.jsonl text eol=lf
+evals/runs/**/*.txt text eol=lf

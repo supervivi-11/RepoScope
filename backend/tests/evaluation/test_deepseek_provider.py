@@ -15,6 +15,8 @@ from app.evaluation.deepseek_provider import (
     DeepSeekCredentials,
     DeepSeekEvaluationGateway,
     InMemoryCallLedger,
+    OutputBudgetExhausted,
+    ProviderCallUnverifiable,
     TokenBudgetExceeded,
     UsageUnverifiable,
     SchemaUnverifiable,
@@ -72,6 +74,167 @@ def test_schema_error_code_distinguishes_exhausted_output_budget() -> None:
 
     assert _schema_error_code(exhausted, 16384) == "output_budget_exhausted"
     assert _schema_error_code(ordinary, 16384) == "schema_error"
+
+
+@pytest.mark.anyio
+async def test_output_budget_exhaustion_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = SimpleNamespace(
+        usage_metadata={
+            "input_tokens": 10,
+            "output_tokens": 16384,
+            "input_token_details": {"cache_read": 0},
+        },
+        response_metadata={"model_name": "deepseek-v4-flash"},
+    )
+
+    class _Structured:
+        async def ainvoke(self, messages):
+            return {
+                "raw": raw,
+                "parsed": None,
+                "parsing_error": ValueError("truncated"),
+            }
+
+    class _ChatOpenAI:
+        def __init__(self, **kwargs):
+            pass
+
+        def with_structured_output(self, response_model, **kwargs):
+            return _Structured()
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", _ChatOpenAI)
+    ledger = InMemoryCallLedger(max_total_tokens=2_500_000)
+    gateway = DeepSeekEvaluationGateway(
+        credentials=DeepSeekCredentials(api_key="test-key"),
+        configuration=DeepSeekRunConfig.approved(),
+        ledger=ledger,
+        case_id="example-issue-1",
+        system="reposcope",
+    )
+
+    with pytest.raises(OutputBudgetExhausted):
+        await invoke_structured(
+            gateway,
+            phase=ModelPhase.ISSUE_UNDERSTANDING,
+            response_model=IssueUnderstanding,
+            context={},
+            retries=2,
+        )
+
+    assert len(ledger.records) == 1
+    assert ledger.records[0].safe_error_code == "output_budget_exhausted"
+
+
+@pytest.mark.parametrize(
+    ("usage", "metadata"),
+    (
+        ({}, {"model_name": "deepseek-v4-flash"}),
+        ({"input_tokens": 10}, {"model_name": "deepseek-v4-flash"}),
+        (
+            {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "input_token_details": {"cache_read": 0},
+            },
+            {},
+        ),
+    ),
+)
+@pytest.mark.anyio
+async def test_schema_error_without_complete_usage_and_model_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+    usage: dict[str, object],
+    metadata: dict[str, object],
+) -> None:
+    request_count = 0
+    raw = SimpleNamespace(usage_metadata=usage, response_metadata=metadata)
+
+    class _Structured:
+        async def ainvoke(self, messages):
+            nonlocal request_count
+            request_count += 1
+            return {
+                "raw": raw,
+                "parsed": None,
+                "parsing_error": ValueError("invalid JSON"),
+            }
+
+    class _ChatOpenAI:
+        def __init__(self, **kwargs):
+            pass
+
+        def with_structured_output(self, response_model, **kwargs):
+            return _Structured()
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", _ChatOpenAI)
+    ledger = InMemoryCallLedger(max_total_tokens=2_500_000)
+    gateway = DeepSeekEvaluationGateway(
+        credentials=DeepSeekCredentials(api_key="test-key"),
+        configuration=DeepSeekRunConfig.approved(),
+        ledger=ledger,
+        case_id="example-issue-1",
+        system="reposcope",
+    )
+
+    with pytest.raises(ProviderCallUnverifiable):
+        await invoke_structured(
+            gateway,
+            phase=ModelPhase.ISSUE_UNDERSTANDING,
+            response_model=IssueUnderstanding,
+            context={},
+            retries=2,
+        )
+
+    assert request_count == 1
+    assert len(ledger.records) == 1
+
+
+@pytest.mark.anyio
+async def test_invalid_parsed_response_without_model_provenance_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_count = 0
+    raw = SimpleNamespace(
+        usage_metadata={"input_tokens": 10, "output_tokens": 5},
+        response_metadata={},
+    )
+
+    class _Structured:
+        async def ainvoke(self, messages):
+            nonlocal request_count
+            request_count += 1
+            return {"raw": raw, "parsed": {}, "parsing_error": None}
+
+    class _ChatOpenAI:
+        def __init__(self, **kwargs):
+            pass
+
+        def with_structured_output(self, response_model, **kwargs):
+            return _Structured()
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", _ChatOpenAI)
+    ledger = InMemoryCallLedger(max_total_tokens=2_500_000)
+    gateway = DeepSeekEvaluationGateway(
+        credentials=DeepSeekCredentials(api_key="test-key"),
+        configuration=DeepSeekRunConfig.approved(),
+        ledger=ledger,
+        case_id="example-issue-1",
+        system="reposcope",
+    )
+
+    with pytest.raises(ProviderCallUnverifiable):
+        await invoke_structured(
+            gateway,
+            phase=ModelPhase.ISSUE_UNDERSTANDING,
+            response_model=IssueUnderstanding,
+            context={},
+            retries=2,
+        )
+
+    assert request_count == 1
+    assert len(ledger.records) == 1
 
 
 @pytest.mark.anyio
@@ -425,7 +588,7 @@ def test_token_budget_excess_is_fatal_seals_ledger_and_persists_record(
 
 
 @pytest.mark.anyio
-async def test_gateway_never_sends_a_second_request_after_observed_budget_excess(
+async def test_gateway_reserves_worst_case_tokens_before_first_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request_count = 0
@@ -452,26 +615,27 @@ async def test_gateway_never_sends_a_second_request_after_observed_budget_excess
             return _Structured()
 
     monkeypatch.setattr("langchain_openai.ChatOpenAI", _ChatOpenAI)
+    ledger = InMemoryCallLedger(max_total_tokens=10)
     gateway = DeepSeekEvaluationGateway(
         credentials=DeepSeekCredentials(api_key="test-key"),
         configuration=DeepSeekRunConfig.approved(),
-        ledger=InMemoryCallLedger(max_total_tokens=10),
+        ledger=ledger,
         case_id="schema-preflight",
         system="preflight",
     )
 
-    for _ in range(2):
-        with pytest.raises(TokenBudgetExceeded):
-            await gateway.generate(
-                phase=ModelPhase.ISSUE_UNDERSTANDING,
-                response_model=IssueUnderstanding,
-                context={},
-            )
-    assert request_count == 1
+    with pytest.raises(TokenBudgetExceeded):
+        await gateway.generate(
+            phase=ModelPhase.ISSUE_UNDERSTANDING,
+            response_model=IssueUnderstanding,
+            context={},
+        )
+    assert request_count == 0
+    assert ledger.records == ()
 
 
 @pytest.mark.anyio
-async def test_internal_server_error_is_transient_and_retryable(
+async def test_internal_server_error_is_fatal_when_usage_is_unverifiable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Structured:
@@ -496,9 +660,7 @@ async def test_internal_server_error_is_transient_and_retryable(
         system="preflight",
     )
 
-    from app.agent import TransientModelError
-
-    with pytest.raises(TransientModelError):
+    with pytest.raises(ProviderCallUnverifiable):
         await gateway.generate(
             phase=ModelPhase.ISSUE_UNDERSTANDING,
             response_model=IssueUnderstanding,
@@ -635,9 +797,7 @@ async def test_failed_provider_attempt_is_recorded_without_secret_or_fake_cost(
         system="reposcope",
     )
 
-    from app.agent import TransientModelError
-
-    with pytest.raises(TransientModelError):
+    with pytest.raises(ProviderCallUnverifiable):
         await gateway.generate(
             phase=ModelPhase.ISSUE_UNDERSTANDING,
             response_model=IssueUnderstanding,
