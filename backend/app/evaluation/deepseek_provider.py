@@ -21,6 +21,7 @@ from app.agent.gateway import (
     ModelPhase,
     ModelSchemaError,
     PermanentModelError,
+    RetryableModelSchemaError,
     ResponseT,
     TransientModelError,
 )
@@ -56,7 +57,7 @@ class UsageUnverifiable(EvaluationRunAbort):
     pass
 
 
-class SchemaUnverifiable(EvaluationRunAbort):
+class SchemaUnverifiable(RetryableModelSchemaError, EvaluationRunAbort):
     pass
 
 

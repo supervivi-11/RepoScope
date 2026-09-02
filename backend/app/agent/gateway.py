@@ -33,6 +33,10 @@ class ModelSchemaError(ModelGatewayError):
     pass
 
 
+class RetryableModelSchemaError(ModelSchemaError):
+    """A malformed structured response that may be retried within the fixed budget."""
+
+
 class ModelSafetyError(ModelGatewayError):
     pass
 
@@ -81,7 +85,7 @@ async def invoke_structured(
                 context=context,
                 attempt=attempts,
             )
-        except TransientModelError as exc:
+        except (TransientModelError, RetryableModelSchemaError) as exc:
             if attempts > retries:
                 exc.attempts = attempts
                 raise

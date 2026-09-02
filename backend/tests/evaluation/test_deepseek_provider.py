@@ -531,6 +531,55 @@ async def test_invoke_structured_passes_actual_retry_attempt_to_gateway() -> Non
     assert attempts == [1, 2, 3]
 
 
+@pytest.mark.anyio
+async def test_invoke_structured_retries_retryable_schema_errors() -> None:
+    from app.agent import RetryableModelSchemaError
+
+    attempts: list[int] = []
+
+    class _Gateway:
+        async def generate(self, *, phase, response_model, context, attempt):
+            attempts.append(attempt)
+            if attempt < 3:
+                raise RetryableModelSchemaError("invalid structured response")
+            return _understanding()
+
+    result = await invoke_structured(
+        _Gateway(),
+        phase=ModelPhase.ISSUE_UNDERSTANDING,
+        response_model=IssueUnderstanding,
+        context={},
+        retries=2,
+    )
+
+    assert result.attempts == 3
+    assert attempts == [1, 2, 3]
+
+
+@pytest.mark.anyio
+async def test_invoke_structured_propagates_exhausted_retryable_schema_error() -> None:
+    from app.agent import RetryableModelSchemaError
+
+    attempts: list[int] = []
+
+    class _Gateway:
+        async def generate(self, *, phase, response_model, context, attempt):
+            attempts.append(attempt)
+            raise RetryableModelSchemaError("invalid structured response")
+
+    with pytest.raises(RetryableModelSchemaError) as raised:
+        await invoke_structured(
+            _Gateway(),
+            phase=ModelPhase.ISSUE_UNDERSTANDING,
+            response_model=IssueUnderstanding,
+            context={},
+            retries=2,
+        )
+
+    assert raised.value.attempts == 3
+    assert attempts == [1, 2, 3]
+
+
 @pytest.mark.parametrize(
     ("timestamp", "expected"),
     (

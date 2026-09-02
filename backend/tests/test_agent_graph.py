@@ -24,6 +24,7 @@ from app.agent import (
     PermanentModelError,
     ProposedTest,
     RepositoryIdentity,
+    RetryableModelSchemaError,
     TransientModelError,
     ToolRequest,
     build_analysis_state,
@@ -355,6 +356,37 @@ async def test_graph_records_actual_attempts_after_transient_then_permanent_fail
     assert paused["counters"].model_attempts == 5
     failure = next(item for item in paused["events"] if item.kind == "model_failed")
     assert failure.model_attempts == 2
+
+
+@pytest.mark.anyio
+async def test_graph_propagates_exhausted_retryable_schema_error(
+    tmp_path: Path,
+) -> None:
+    tools = _tools(tmp_path)
+    model = _ScriptedModel(
+        {
+            ModelPhase.ISSUE_UNDERSTANDING: [
+                RetryableModelSchemaError(),
+                RetryableModelSchemaError(),
+                RetryableModelSchemaError(),
+            ],
+        }
+    )
+    graph = build_investigation_graph(
+        tools=tools,
+        model=model,
+        budget=InvestigationBudget(model_retries=2),
+        checkpointer=_memory(),
+    )
+
+    with pytest.raises(RetryableModelSchemaError) as raised:
+        await graph.ainvoke(
+            _state(tools, "analysis-schema-retries"),
+            _config("schema-retries"),
+        )
+
+    assert raised.value.attempts == 3
+    assert model.calls[ModelPhase.ISSUE_UNDERSTANDING] == 3
 
 
 @pytest.mark.anyio
