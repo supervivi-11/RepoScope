@@ -19,6 +19,8 @@ dependencies = [
 
 [project.scripts]
 reposcope-eval = "app.evaluation.cli:main"
+reposcope-development-predict = "app.evaluation.online_run:main"
+reposcope-development-score = "app.evaluation.development_score:main"
 
 [project.optional-dependencies]
 dev = [

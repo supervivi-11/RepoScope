@@ -50,7 +50,7 @@ class _ScriptedModel:
         self.responses = {phase: deque(items) for phase, items in responses.items()}
         self.calls: dict[ModelPhase, int] = defaultdict(int)
 
-    async def generate(self, *, phase, response_model, context):
+    async def generate(self, *, phase, response_model, context, attempt=1):
         self.calls[phase] += 1
         response = self.responses[phase].popleft()
         if isinstance(response, Exception):

@@ -1,0 +1,179 @@
+{
+  "$defs": {
+    "ArtifactDigest": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "title": "ArtifactDigest",
+      "type": "object"
+    },
+    "DependencyVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "DependencyVersion",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactDigest"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "case_count": {
+      "const": 6,
+      "title": "Case Count",
+      "type": "integer"
+    },
+    "completion_status": {
+      "const": "complete",
+      "title": "Completion Status",
+      "type": "string"
+    },
+    "configuration_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Configuration Digest",
+      "type": "string"
+    },
+    "dataset_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dataset Digest",
+      "type": "string"
+    },
+    "dependency_versions": {
+      "items": {
+        "$ref": "#/$defs/DependencyVersion"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Dependency Versions",
+      "type": "array"
+    },
+    "execution_order": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 12,
+      "minItems": 12,
+      "title": "Execution Order",
+      "type": "array"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "python_version": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Python Version",
+      "type": "string"
+    },
+    "reposcope_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Reposcope Commit",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "reposcope.eval.manifest.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "systems": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "enum": [
+            "issue_only",
+            "reposcope"
+          ],
+          "type": "string"
+        },
+        {
+          "enum": [
+            "issue_only",
+            "reposcope"
+          ],
+          "type": "string"
+        }
+      ],
+      "title": "Systems",
+      "type": "array"
+    },
+    "working_tree_clean": {
+      "const": true,
+      "title": "Working Tree Clean",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "completion_status",
+    "run_id",
+    "dataset_digest",
+    "configuration_digest",
+    "reposcope_commit",
+    "working_tree_clean",
+    "python_version",
+    "dependency_versions",
+    "execution_order",
+    "started_at",
+    "finished_at",
+    "systems",
+    "case_count",
+    "artifacts"
+  ],
+  "title": "RunArtifactManifest",
+  "type": "object"
+}

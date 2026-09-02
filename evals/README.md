@@ -7,7 +7,7 @@
 - `benchmark-slots.v2.jsonl` 保存确定性的 6/6 锁定映射；`benchmark-slots.v1.jsonl` 仅作为 Task 7 的空槽历史契约保留，不再表示当前状态。
 - `development-gold.v1.jsonl` 公开 6 个开发集答案；hidden gold、修复证据和源码快照只存在于被 Git 忽略的 `local/evaluation/`。
 - `benchmark-cases.v1.sha256` 固定完整数据集指纹：`de76c423ffe936743f979f35cc634caed064e571b3f5c9563b219ac5025ceea7`。
-- 尚未运行真实模型，因此没有 benchmark 分数、Token、成本或胜负结论。
+- DeepSeek Flash 的 development-only 在线 runner、逐调用 usage 账本和离线评分器已经实现并通过假模型测试；尚未执行真实模型，因此本节仍不声明 benchmark 分数、Token、成本或胜负结论。
 
 ## 数据与答案必须物理分离
 
@@ -28,6 +28,9 @@ Runner 只能接收 case。Gold 只在对应 split 的模型调用全部结束�
 - `reposcope.eval.result.v1`：系统、预测、引用、错误、dataset digest 与可空 usage。
 - `reposcope.eval.summary.v1`：Task 7 的历史摘要契约，保留兼容。
 - `reposcope.eval.summary.v2`：在指标和成对差值之外，强制保存 split 与完整 12-case dataset digest。
+- `reposcope.eval.run-config.v1`：固定 DeepSeek 官方地址、Flash 模型、思考模式、Token/工具/重试预算与费率来源，不含 API Key。
+- `reposcope.eval.call-usage.v1`：逐次记录模型、fingerprint、成功/失败、延迟、缓存输入、输出、思考 Token 和版本化成本。
+- `reposcope.eval.manifest.v1`：覆盖配置、两组原始结果、usage 与复现命令的 SHA-256 清单。
 
 JSON Schema 位于 `evals/schemas/`。JSONL 使用 UTF-8、键排序、紧凑分隔符、LF 与末尾换行；读取器拒绝 BOM、重复 key、NaN/Infinity、重复 ID、过大行和非规范路径。
 
@@ -80,4 +83,22 @@ JSON Schema 位于 `evals/schemas/`。JSONL 使用 UTF-8、键排序、紧凑分
 
 策展者可在本机追加 `--hidden-gold local\evaluation\hidden-gold.v1.jsonl --snapshots-root local\evaluation\snapshots`，验证全部 12 个 snapshot digest 与 gold 文件。该命令仍不会调用模型。
 
-正式 `run` 与 `score` 必须同时传入完整 12-case catalog 和 `--dataset-digest-file evals\benchmark-cases.v1.sha256`；减少案例、移动 split 或修改字段都会在预测/评分前失败。内部测试使用显式 fixture 模式验证小型样例，该模式不用于 benchmark。`run` 目前接受显式 scripted prediction，用于验证输入隔离、结果契约和评分管线；它不是模型成绩。受控真实 provider 实验是锁定完成后的下一阶段，必须保持 hidden gold 对 runner 不可见。
+正式在线预测与离线评分必须同时传入完整 12-case catalog 和 `--dataset-digest-file evals\benchmark-cases.v1.sha256`；减少案例、移动 split 或修改字段都会在加载模型凭据前失败。在线进程只接受 `--split development`，没有 gold 参数，并用 Python audit hook 阻止读取 development/hidden gold。两组预测和 SHA-256 manifest 完成后，进程退出；此后才运行只接受 `development-gold.v1.jsonl` 的离线 scorer。
+
+## DeepSeek Flash 真实 development 运行
+
+固定配置为 DeepSeek 官方 `https://api.deepseek.com`、`deepseek-v4-flash`、thinking enabled、`reasoning_effort=high`、temperature 省略、每次最多 4096 输出 Token、总计最多 2,500,000 Token、12 个工具调用、2 个证据轮次和 2 次模型重试。费率卡固定为 `deepseek-v4-2026-08-16-v1`，实际账单仍以 DeepSeek 平台为准。
+
+API Key 只读取当前进程的 `REPOSCOPE_DEEPSEEK_API_KEY` 环境变量，不读取 CLI、结果文件或 run config。不要把 Key 粘贴到聊天、命令参数、README 或 Git。Windows 用户可在“编辑账户的环境变量”中新增该变量，然后重启终端/Codex 让新进程继承。
+
+在 `backend` 作为 Python 工作目录、仓库根目录作为当前目录时执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m app.evaluation.online_run --split development --cases evals\benchmark-cases.v1.jsonl --dataset-digest-file evals\benchmark-cases.v1.sha256 --snapshots-root local\evaluation\snapshots --output-directory evals\runs\deepseek-v4-flash-development-v1
+
+.\.venv\Scripts\python.exe -m app.evaluation.development_score --cases evals\benchmark-cases.v1.jsonl --dataset-digest-file evals\benchmark-cases.v1.sha256 --snapshots-root local\evaluation\snapshots --prediction-directory evals\runs\deepseek-v4-flash-development-v1 --development-gold evals\development-gold.v1.jsonl --output evals\runs\deepseek-v4-flash-development-v1\summary.v2.json
+```
+
+第一条命令先做五种合成 Schema 兼容性预检，再按每个 case 的 Issue-only → RepoScope 顺序运行；预检不计入两组成绩，但保留在 call ledger。第二条命令验证 prediction manifest 和所有 artifact digest 后才读取 development gold，全程不会调用模型。`hidden` 和 `all` 不被在线命令接受。
+
+原有 `app.evaluation.cli run` 仍是确定性的 scripted fixture runner，用于无模型测试输入隔离、结果契约和评分管线；其输出不是模型成绩。
