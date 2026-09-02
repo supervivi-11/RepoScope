@@ -111,7 +111,6 @@ Task 8 的实际命令、环境与观察结果见 [发布验证记录](docs/rele
 - 安全边界与漏洞报告：[SECURITY.md](SECURITY.md)
 - 开发与 PR 约定：[CONTRIBUTING.md](CONTRIBUTING.md)
 - 演示录制：[docs/demo-recording.md](docs/demo-recording.md)
-- 面试讲解：[docs/interview-guide.md](docs/interview-guide.md)
 - 发布检查：[docs/release-checklist.md](docs/release-checklist.md)
 
 许可证：[MIT](LICENSE)。
