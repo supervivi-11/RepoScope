@@ -34,7 +34,7 @@ class DeepSeekRunConfig(RealEvaluationModel):
     thinking: Literal["enabled"]
     reasoning_effort: Literal["low"]
     temperature: None = None
-    max_output_tokens: Literal[8192]
+    max_output_tokens: Literal[16384]
     max_total_tokens: Literal[2_500_000]
     max_tool_calls: Literal[12]
     max_evidence_rounds: Literal[2]
@@ -59,7 +59,7 @@ class DeepSeekRunConfig(RealEvaluationModel):
             api_surface="responses",
             thinking="enabled",
             reasoning_effort="low",
-            max_output_tokens=8192,
+            max_output_tokens=16384,
             max_total_tokens=2_500_000,
             max_tool_calls=12,
             max_evidence_rounds=2,

@@ -19,6 +19,7 @@ from app.evaluation.deepseek_provider import (
     UsageUnverifiable,
     SchemaUnverifiable,
     _phase_instruction,
+    _schema_error_code,
     _estimated_cost,
     _deepseek_json_schema,
     _rate_period,
@@ -56,6 +57,21 @@ def test_tool_selection_instruction_declares_read_only_tools_and_completion_rule
     assert "read_code" in instruction
     assert "complete=true" in instruction
     assert "tool_name=null" in instruction
+
+
+def test_schema_error_code_distinguishes_exhausted_output_budget() -> None:
+    exhausted = SimpleNamespace(
+        usage_metadata={
+            "output_tokens": 16384,
+            "output_token_details": {"reasoning": 16000},
+        }
+    )
+    ordinary = SimpleNamespace(
+        usage_metadata={"output_tokens": 100, "output_token_details": {}}
+    )
+
+    assert _schema_error_code(exhausted, 16384) == "output_budget_exhausted"
+    assert _schema_error_code(ordinary, 16384) == "schema_error"
 
 
 @pytest.mark.anyio
@@ -177,7 +193,7 @@ async def test_gateway_uses_fixed_responses_configuration_and_records_usage(
     assert constructor["use_responses_api"] is True
     assert constructor["reasoning_effort"] == "low"
     assert "extra_body" not in constructor
-    assert constructor["max_completion_tokens"] == 8192
+    assert constructor["max_completion_tokens"] == 16384
     assert constructor["max_retries"] == 0
     assert constructor["timeout"] == 120
     assert "temperature" not in constructor
@@ -277,7 +293,7 @@ async def test_real_langchain_client_sends_fixed_responses_wire_payload(
     payload = captured["payload"]
     assert payload["model"] == "deepseek-v4-flash"
     assert payload["reasoning"] == {"effort": "low"}
-    assert payload["max_output_tokens"] == 8192
+    assert payload["max_output_tokens"] == 16384
     assert payload["text"]["format"]["type"] == "json_schema"
     assert payload["text"]["format"]["strict"] is True
     assert "temperature" not in payload

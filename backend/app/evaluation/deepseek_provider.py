@@ -263,6 +263,9 @@ class DeepSeekEvaluationGateway:
         raw = result.get("raw")
         parsing_error = result.get("parsing_error")
         if parsing_error is not None:
+            safe_error_code = _schema_error_code(
+                raw, self._configuration.max_output_tokens
+            )
             self._append_record(
                 phase=phase,
                 attempt=attempt,
@@ -270,7 +273,7 @@ class DeepSeekEvaluationGateway:
                 started_counter=started_counter,
                 raw=raw,
                 status="failed",
-                safe_error_code="schema_error",
+                safe_error_code=safe_error_code,
             )
             raise SchemaUnverifiable("The model response failed schema validation.") from parsing_error
         parsed = result.get("parsed")
@@ -281,6 +284,9 @@ class DeepSeekEvaluationGateway:
                 else response_model.model_validate(parsed)
             )
         except ValidationError as exc:
+            safe_error_code = _schema_error_code(
+                raw, self._configuration.max_output_tokens
+            )
             self._append_record(
                 phase=phase,
                 attempt=attempt,
@@ -288,7 +294,7 @@ class DeepSeekEvaluationGateway:
                 started_counter=started_counter,
                 raw=raw,
                 status="failed",
-                safe_error_code="schema_error",
+                safe_error_code=safe_error_code,
             )
             raise SchemaUnverifiable("The model returned an unexpected schema.") from exc
         usage_valid = self._append_record(
@@ -440,3 +446,11 @@ def _phase_instruction(phase: ModelPhase) -> str:
         "complete=true, tool_name=null, and arguments=[]. When requesting a tool, "
         "set complete=false and provide a non-null tool_name."
     )
+
+
+def _schema_error_code(raw: object, maximum: int) -> str:
+    usage = getattr(raw, "usage_metadata", None) or {}
+    output_tokens = usage.get("output_tokens")
+    if type(output_tokens) is int and output_tokens >= maximum:
+        return "output_budget_exhausted"
+    return "schema_error"

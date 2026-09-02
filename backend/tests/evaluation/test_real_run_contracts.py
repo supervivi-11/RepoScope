@@ -33,7 +33,7 @@ def test_approved_deepseek_configuration_is_fixed_redacted_and_deterministic() -
     assert config.thinking == "enabled"
     assert config.reasoning_effort == "low"
     assert config.temperature is None
-    assert config.max_output_tokens == 8192
+    assert config.max_output_tokens == 16384
     assert config.max_total_tokens == 2_500_000
     assert config.max_tool_calls == 12
     assert config.max_evidence_rounds == 2
