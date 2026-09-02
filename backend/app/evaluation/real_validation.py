@@ -60,15 +60,18 @@ def validate_complete_prediction_evidence(
         raise ValueError("provider call ledger must be complete and ordered")
     if any(
         item.requested_model != configuration.requested_model
-        or item.status != "success"
-        or item.safe_error_code is not None
         or item.input_tokens is None
         or item.output_tokens is None
         or item.returned_model is None
         for item in call_usage
     ):
         raise ValueError("provider call ledger is incomplete or unverifiable")
-    preflight = tuple(item for item in call_usage if item.system == "preflight")
+    _validate_retry_sequences(call_usage, max_retries=configuration.model_retries)
+    preflight = tuple(
+        item
+        for item in call_usage
+        if item.system == "preflight" and item.status == "success"
+    )
     if (
         len(preflight) != len(_PREFLIGHT_PHASES)
         or tuple(item.phase for item in preflight) != _PREFLIGHT_PHASES
@@ -108,21 +111,49 @@ def validate_complete_prediction_evidence(
             raise ValueError("prediction usage does not match provider call ledger")
 
 
+def _validate_retry_sequences(
+    records: tuple[ProviderCallUsage, ...], *, max_retries: int
+) -> None:
+    pending: ProviderCallUsage | None = None
+    for item in records:
+        if item.attempt > max_retries + 1:
+            raise ValueError("provider retry sequence exceeds the fixed retry budget")
+        if item.attempt == 1:
+            if pending is not None:
+                raise ValueError("provider retry sequence ended without success")
+        elif (
+            pending is None
+            or item.case_id != pending.case_id
+            or item.system != pending.system
+            or item.phase != pending.phase
+            or item.attempt != pending.attempt + 1
+        ):
+            raise ValueError("provider retry sequence is not contiguous")
+
+        if item.status == "failed":
+            if item.safe_error_code != "schema_error":
+                raise ValueError("provider retry sequence contains a non-retryable failure")
+            pending = item
+        else:
+            pending = None
+    if pending is not None:
+        raise ValueError("provider retry sequence ended without success")
+
+
 def provider_backend_drift(
     call_usage: tuple[ProviderCallUsage, ...], requested_model: str
 ) -> bool | None:
-    successful = tuple(item for item in call_usage if item.status == "success")
-    known = tuple(item.returned_model for item in successful if item.returned_model)
+    known = tuple(item.returned_model for item in call_usage if item.returned_model)
     fingerprints = {
         item.system_fingerprint
-        for item in successful
+        for item in call_usage
         if item.system_fingerprint is not None
     }
     if any(model != requested_model for model in known) or len(set(known)) > 1:
         return True
     if len(fingerprints) > 1:
         return True
-    if len(known) != len(successful):
+    if len(known) != len(call_usage):
         return None
     return False
 

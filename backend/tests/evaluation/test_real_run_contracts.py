@@ -177,6 +177,16 @@ def test_provider_backend_drift_uses_observed_models_without_alias_fallback() ->
         (flash, pro.model_copy(update={"call_id": "call-0002"})),
         "deepseek-v4-flash",
     ) is True
+    failed_pro = pro.model_copy(
+        update={
+            "call_id": "call-0002",
+            "status": "failed",
+            "safe_error_code": "schema_error",
+        }
+    )
+    assert provider_backend_drift(
+        (flash, failed_pro), "deepseek-v4-flash"
+    ) is True
 
 
 def test_artifact_manifest_accepts_only_relative_unique_hashed_outputs() -> None:

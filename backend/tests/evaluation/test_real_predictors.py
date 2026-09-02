@@ -21,8 +21,9 @@ from app.evaluation.predictors import (
     IssueOnlyModelOutput,
     RealIssueOnlyPredictor,
     RealRepoScopeAnalyzer,
+    _model_id,
 )
-from app.evaluation.real_contracts import DeepSeekRunConfig
+from app.evaluation.real_contracts import DeepSeekRunConfig, ProviderCallUsage
 from app.evaluation.runners import IssueOnlyInput
 from app.evaluation.contracts import BenchmarkCase
 from app.evaluation.snapshot import snapshot_tree_digest
@@ -127,6 +128,19 @@ def _repo_gateway() -> _ScriptedGateway:
             ModelPhase.REPORT_COMPOSITION: [report],
         }
     )
+
+
+def test_model_id_includes_a_failed_schema_attempt_that_later_succeeds() -> None:
+    records = (
+        ProviderCallUsage.model_construct(
+            status="failed", returned_model="deepseek-v4-flash"
+        ),
+        ProviderCallUsage.model_construct(
+            status="success", returned_model="deepseek-v4-flash"
+        ),
+    )
+
+    assert _model_id(records) == "deepseek-v4-flash"
 
 
 @pytest.mark.anyio

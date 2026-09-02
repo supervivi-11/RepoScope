@@ -39,6 +39,7 @@ from app.evaluation.real_contracts import (
     REQUIRED_DEPENDENCIES,
     RunArtifactManifest,
 )
+from app.evaluation.real_validation import validate_complete_prediction_evidence
 
 
 DATASET_DIGEST = "de76c423ffe936743f979f35cc634caed064e571b3f5c9563b219ac5025ceea7"
@@ -114,6 +115,25 @@ def _ledger(case_ids: tuple[str, ...]) -> tuple[ProviderCallUsage, ...]:
         add(case_id, "issue_only", "issue_only_prediction", 10, 2, "0.00000352")
         add(case_id, "reposcope", "report_composition", 10, 2, "0.00000352")
     return tuple(rows)
+
+
+def _with_schema_retry(
+    rows: tuple[ProviderCallUsage, ...], *, index: int
+) -> tuple[ProviderCallUsage, ...]:
+    original = rows[index]
+    failed = original.model_copy(
+        update={
+            "status": "failed",
+            "safe_error_code": "schema_error",
+            "attempt": 1,
+        }
+    )
+    retried = original.model_copy(update={"attempt": 2})
+    expanded = (*rows[:index], failed, retried, *rows[index + 1 :])
+    return tuple(
+        item.model_copy(update={"call_id": f"call-{number:04d}"})
+        for number, item in enumerate(expanded, start=1)
+    )
 
 
 def test_online_module_has_no_gold_or_scoring_imports_and_no_gold_argument() -> None:
@@ -394,6 +414,63 @@ def test_complete_manifest_rejects_empty_ledger_and_failed_results(tmp_path: Pat
             issue_only_results=(failed, *issue_results[1:]),
             call_usage=_ledger(case_ids),
             **common,
+        )
+
+
+def test_complete_validation_accepts_bounded_successful_schema_retry() -> None:
+    case_ids = tuple(f"development-case-{number}" for number in range(1, 7))
+    ledger = _with_schema_retry(_ledger(case_ids), index=5)
+    original = _result(case_ids[0], "issue_only")
+    retried_usage = original.usage.model_copy(
+        update={
+            "latency_ms": 10,
+            "input_tokens": 20,
+            "output_tokens": 4,
+            "estimated_cost_usd": Decimal("0.00000704"),
+            "model_attempts": 2,
+        }
+    )
+    issue_results = (
+        original.model_copy(update={"usage": retried_usage}),
+        *tuple(_result(case_id, "issue_only") for case_id in case_ids[1:]),
+    )
+    reposcope_results = tuple(_result(case_id, "reposcope") for case_id in case_ids)
+
+    validate_complete_prediction_evidence(
+        configuration=DeepSeekRunConfig.approved(),
+        dataset_digest=DATASET_DIGEST,
+        issue_only=issue_results,
+        reposcope=reposcope_results,
+        call_usage=ledger,
+        started_at=datetime(2026, 9, 2, 12, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 9, 2, 12, 1, tzinfo=UTC),
+    )
+
+
+@pytest.mark.parametrize(
+    "update",
+    (
+        {"phase": "report_composition"},
+        {"attempt": 3},
+        {"status": "failed", "safe_error_code": "output_budget_exhausted"},
+    ),
+)
+def test_complete_validation_rejects_invalid_schema_retry_sequence(
+    update: dict[str, object],
+) -> None:
+    case_ids = tuple(f"development-case-{number}" for number in range(1, 7))
+    ledger = list(_with_schema_retry(_ledger(case_ids), index=5))
+    ledger[6] = ledger[6].model_copy(update=update)
+
+    with pytest.raises(ValueError, match="retry sequence"):
+        validate_complete_prediction_evidence(
+            configuration=DeepSeekRunConfig.approved(),
+            dataset_digest=DATASET_DIGEST,
+            issue_only=tuple(_result(case_id, "issue_only") for case_id in case_ids),
+            reposcope=tuple(_result(case_id, "reposcope") for case_id in case_ids),
+            call_usage=tuple(ledger),
+            started_at=datetime(2026, 9, 2, 12, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 9, 2, 12, 1, tzinfo=UTC),
         )
 
 

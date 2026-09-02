@@ -188,8 +188,10 @@ def _rank_report_files(report: AnalysisReport) -> tuple[str, ...]:
 
 def _model_id(records: tuple[ProviderCallUsage, ...]) -> str | None:
     successful = tuple(item for item in records if item.status == "success")
-    returned = {item.returned_model for item in successful if item.returned_model}
-    if len(successful) != len(records) or len(returned) != 1:
+    returned = {item.returned_model for item in records if item.returned_model}
+    if not successful or len(returned) != 1 or any(
+        item.returned_model is None for item in records
+    ):
         return None
     return next(iter(returned))
 
