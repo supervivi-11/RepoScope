@@ -10,20 +10,21 @@ import pytest
 from pydantic import ValidationError
 from openai import InternalServerError
 
-from app.agent import IssueUnderstanding, ModelPhase, invoke_structured
+from app.agent import AnalysisReport, IssueUnderstanding, ModelPhase, ToolRequest, invoke_structured
 from app.evaluation.deepseek_provider import (
     DeepSeekCredentials,
     DeepSeekEvaluationGateway,
     InMemoryCallLedger,
     TokenBudgetExceeded,
     UsageUnverifiable,
+    SchemaUnverifiable,
+    _phase_instruction,
     _estimated_cost,
     _deepseek_json_schema,
     _rate_period,
 )
 from app.evaluation.errors import EvaluationRunAbort
 from app.evaluation.real_contracts import DeepSeekRunConfig
-from app.agent import AnalysisReport
 
 
 def _understanding() -> IssueUnderstanding:
@@ -45,6 +46,64 @@ def test_deepseek_schema_types_nullable_reference_without_weakening_contract() -
     assert "statement" in primary["anyOf"][0]["properties"]
     assert "$ref" not in primary["anyOf"][0]
     assert schema["additionalProperties"] is False
+
+
+def test_tool_selection_instruction_declares_read_only_tools_and_completion_rule() -> None:
+    instruction = _phase_instruction(ModelPhase.TOOL_SELECTION)
+
+    assert "get_repository_map" in instruction
+    assert "search_code" in instruction
+    assert "read_code" in instruction
+    assert "complete=true" in instruction
+    assert "tool_name=null" in instruction
+
+
+@pytest.mark.anyio
+async def test_semantically_invalid_structured_result_aborts_entire_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = SimpleNamespace(
+        usage_metadata={
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "input_token_details": {"cache_read": 0},
+        },
+        response_metadata={"model_name": "deepseek-v4-flash"},
+    )
+
+    class _Structured:
+        async def ainvoke(self, messages):
+            return {
+                "raw": raw,
+                "parsed": {"complete": False, "tool_name": None, "arguments": []},
+                "parsing_error": None,
+            }
+
+    class _ChatOpenAI:
+        def __init__(self, **kwargs):
+            pass
+
+        def with_structured_output(self, response_model, **kwargs):
+            return _Structured()
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", _ChatOpenAI)
+    ledger = InMemoryCallLedger(max_total_tokens=2_500_000)
+    gateway = DeepSeekEvaluationGateway(
+        credentials=DeepSeekCredentials(api_key="test-key"),
+        configuration=DeepSeekRunConfig.approved(),
+        ledger=ledger,
+        case_id="example-issue-1",
+        system="reposcope",
+    )
+
+    with pytest.raises(SchemaUnverifiable):
+        await gateway.generate(
+            phase=ModelPhase.TOOL_SELECTION,
+            response_model=ToolRequest,
+            context={},
+        )
+    assert ledger.records[0].status == "failed"
+    assert ledger.records[0].safe_error_code == "schema_error"
 
 
 def test_credentials_are_required_from_the_deepseek_environment_only(

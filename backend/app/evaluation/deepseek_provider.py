@@ -56,6 +56,10 @@ class UsageUnverifiable(EvaluationRunAbort):
     pass
 
 
+class SchemaUnverifiable(EvaluationRunAbort):
+    pass
+
+
 class InMemoryCallLedger:
     def __init__(
         self, *, max_total_tokens: int, journal_path: Path | None = None
@@ -175,7 +179,8 @@ class DeepSeekEvaluationGateway:
             (
                 "system",
                 "Return valid JSON matching the requested schema. Do not include "
-                "credentials, prompts, reasoning_content, or hidden chain-of-thought.",
+                "credentials, prompts, reasoning_content, or hidden chain-of-thought. "
+                + _phase_instruction(phase),
             ),
             (
                 "human",
@@ -201,7 +206,7 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code="schema_error",
             )
-            raise ModelSchemaError("The model response failed schema validation.") from exc
+            raise SchemaUnverifiable("The model response failed schema validation.") from exc
         except (
             TimeoutError,
             ConnectionError,
@@ -254,7 +259,7 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code="schema_error",
             )
-            raise ModelSchemaError("The model returned an unexpected envelope.")
+            raise SchemaUnverifiable("The model returned an unexpected envelope.")
         raw = result.get("raw")
         parsing_error = result.get("parsing_error")
         if parsing_error is not None:
@@ -267,7 +272,7 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code="schema_error",
             )
-            raise ModelSchemaError("The model response failed schema validation.") from parsing_error
+            raise SchemaUnverifiable("The model response failed schema validation.") from parsing_error
         parsed = result.get("parsed")
         try:
             validated = (
@@ -285,7 +290,7 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code="schema_error",
             )
-            raise ModelSchemaError("The model returned an unexpected schema.") from exc
+            raise SchemaUnverifiable("The model returned an unexpected schema.") from exc
         usage_valid = self._append_record(
             phase=phase,
             attempt=attempt,
@@ -420,3 +425,18 @@ def _deepseek_json_schema(response_model: type[ResponseT]) -> dict[str, Any]:
     if not isinstance(converted_schema, dict):
         raise ValueError("structured response schema must be an object")
     return converted_schema
+
+
+def _phase_instruction(phase: ModelPhase) -> str:
+    if phase is not ModelPhase.TOOL_SELECTION:
+        return "Follow every structural and semantic constraint in the schema."
+    return (
+        "For tool selection, either request exactly one read-only tool or finish. "
+        "Available tools are get_repository_map (no arguments), search_code "
+        "(query, optional path_prefix), read_code (path, start_line, end_line), "
+        "find_symbol (symbol), find_references (symbol), get_recent_commits "
+        "(optional path), and get_related_issues (query). Arguments must be the "
+        "schema's flat key/value entries with scalar values. To finish, set "
+        "complete=true, tool_name=null, and arguments=[]. When requesting a tool, "
+        "set complete=false and provide a non-null tool_name."
+    )
