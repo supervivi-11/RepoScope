@@ -19,7 +19,7 @@ from app.agent import (
     ModelPhase,
     ToolRequest,
 )
-from app.evaluation.contracts import BenchmarkResult, EvaluationUsage
+from app.evaluation.contracts import BenchmarkCase, BenchmarkResult, EvaluationUsage
 from app.evaluation.jsonl import read_jsonl
 from app.evaluation.online_run import (
     _parser,
@@ -70,6 +70,22 @@ def _result(case_id: str, system: str) -> BenchmarkResult:
             model_attempts=1,
             rate_card_version="deepseek-v4-2026-08-16-v1",
         ),
+    )
+
+
+def _six_synthetic_cases() -> tuple[BenchmarkCase, ...]:
+    return tuple(
+        BenchmarkCase(
+            schema_version="reposcope.eval.case.v1",
+            case_id=f"development-case-{number}",
+            split="development",
+            repo_url="https://github.com/example/project",
+            issue_number=number,
+            issue_title=f"Synthetic issue {number}",
+            pre_fix_commit_sha="a" * 40,
+            snapshot_tree_digest="b" * 64,
+        )
+        for number in range(1, 7)
     )
 
 
@@ -280,17 +296,20 @@ def test_gold_read_guard_blocks_hardlink_alias_in_online_process(tmp_path: Path)
 
 def test_locked_development_inputs_validate_all_six_snapshots_without_gold() -> None:
     root = _root()
+    snapshots_root = root / "local" / "evaluation" / "snapshots"
+    if not snapshots_root.is_dir():
+        pytest.skip("local evaluation snapshots are intentionally not committed")
 
     cases, digest = load_development_inputs(
         cases_path=root / "evals" / "benchmark-cases.v1.jsonl",
         digest_path=root / "evals" / "benchmark-cases.v1.sha256",
-        snapshots_root=root / "local" / "evaluation" / "snapshots",
+        snapshots_root=snapshots_root,
     )
 
     assert len(cases) == 6
     assert {case.split for case in cases} == {"development"}
     assert digest == DATASET_DIGEST
-    assert all((root / "local" / "evaluation" / "snapshots" / case.case_id).is_dir() for case in cases)
+    assert all((snapshots_root / case.case_id).is_dir() for case in cases)
 
 
 def test_dataset_digest_mismatch_fails_before_snapshot_access(tmp_path: Path) -> None:
@@ -520,13 +539,10 @@ def test_complete_validation_rejects_invalid_schema_retry_sequence(
 
 
 @pytest.mark.anyio
-async def test_predictions_run_in_fixed_paired_order_for_six_cases() -> None:
-    root = _root()
-    cases, digest = load_development_inputs(
-        cases_path=root / "evals" / "benchmark-cases.v1.jsonl",
-        digest_path=root / "evals" / "benchmark-cases.v1.sha256",
-        snapshots_root=root / "local" / "evaluation" / "snapshots",
-    )
+async def test_predictions_run_in_fixed_paired_order_for_six_cases(
+    tmp_path: Path,
+) -> None:
+    cases = _six_synthetic_cases()
     calls: list[tuple[str, str, Path | None]] = []
 
     async def execute(system, case, snapshot):
@@ -535,8 +551,8 @@ async def test_predictions_run_in_fixed_paired_order_for_six_cases() -> None:
 
     issue_only, reposcope = await run_paired_predictions(
         cases=cases,
-        dataset_digest=digest,
-        snapshots_root=root / "local" / "evaluation" / "snapshots",
+        dataset_digest=DATASET_DIGEST,
+        snapshots_root=tmp_path / "snapshots",
         execute=execute,
     )
 
@@ -559,14 +575,9 @@ async def test_predictions_run_in_fixed_paired_order_for_six_cases() -> None:
 )
 @pytest.mark.anyio
 async def test_paired_predictions_stop_after_first_failed_result(
-    failed_system: str, expected_calls: tuple[str, ...]
+    tmp_path: Path, failed_system: str, expected_calls: tuple[str, ...]
 ) -> None:
-    root = _root()
-    cases, digest = load_development_inputs(
-        cases_path=root / "evals" / "benchmark-cases.v1.jsonl",
-        digest_path=root / "evals" / "benchmark-cases.v1.sha256",
-        snapshots_root=root / "local" / "evaluation" / "snapshots",
-    )
+    cases = _six_synthetic_cases()
     calls: list[tuple[str, str]] = []
 
     async def execute(system, case, snapshot):
@@ -583,8 +594,8 @@ async def test_paired_predictions_stop_after_first_failed_result(
     with pytest.raises(EvaluationRunAbort):
         await run_paired_predictions(
             cases=cases,
-            dataset_digest=digest,
-            snapshots_root=root / "local" / "evaluation" / "snapshots",
+            dataset_digest=DATASET_DIGEST,
+            snapshots_root=tmp_path / "snapshots",
             execute=execute,
         )
 
