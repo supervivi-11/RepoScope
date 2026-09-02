@@ -177,7 +177,7 @@ async def test_gateway_uses_fixed_responses_configuration_and_records_usage(
     assert constructor["use_responses_api"] is True
     assert constructor["reasoning_effort"] == "high"
     assert "extra_body" not in constructor
-    assert constructor["max_completion_tokens"] == 4096
+    assert constructor["max_completion_tokens"] == 8192
     assert constructor["max_retries"] == 0
     assert constructor["timeout"] == 120
     assert "temperature" not in constructor
@@ -277,7 +277,7 @@ async def test_real_langchain_client_sends_fixed_responses_wire_payload(
     payload = captured["payload"]
     assert payload["model"] == "deepseek-v4-flash"
     assert payload["reasoning"] == {"effort": "high"}
-    assert payload["max_output_tokens"] == 4096
+    assert payload["max_output_tokens"] == 8192
     assert payload["text"]["format"]["type"] == "json_schema"
     assert payload["text"]["format"]["strict"] is True
     assert "temperature" not in payload

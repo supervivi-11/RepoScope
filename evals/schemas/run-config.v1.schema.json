@@ -27,7 +27,7 @@
       "type": "integer"
     },
     "max_output_tokens": {
-      "const": 4096,
+      "const": 8192,
       "title": "Max Output Tokens",
       "type": "integer"
     },
