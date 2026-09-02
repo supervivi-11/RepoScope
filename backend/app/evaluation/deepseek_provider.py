@@ -164,8 +164,9 @@ class DeepSeekEvaluationGateway:
         attempt: int = 1,
     ) -> ResponseT:
         self._ledger.ensure_can_start()
+        wire_schema = _deepseek_json_schema(response_model)
         structured = self._model.with_structured_output(
-            response_model,
+            wire_schema,
             method="json_schema",
             include_raw=True,
             strict=True,
@@ -268,7 +269,13 @@ class DeepSeekEvaluationGateway:
             )
             raise ModelSchemaError("The model response failed schema validation.") from parsing_error
         parsed = result.get("parsed")
-        if not isinstance(parsed, response_model):
+        try:
+            validated = (
+                parsed
+                if isinstance(parsed, response_model)
+                else response_model.model_validate(parsed)
+            )
+        except ValidationError as exc:
             self._append_record(
                 phase=phase,
                 attempt=attempt,
@@ -278,7 +285,7 @@ class DeepSeekEvaluationGateway:
                 status="failed",
                 safe_error_code="schema_error",
             )
-            raise ModelSchemaError("The model returned an unexpected schema.")
+            raise ModelSchemaError("The model returned an unexpected schema.") from exc
         usage_valid = self._append_record(
             phase=phase,
             attempt=attempt,
@@ -290,7 +297,7 @@ class DeepSeekEvaluationGateway:
         )
         if not usage_valid:
             raise UsageUnverifiable("Provider usage cannot prove the run budget.")
-        return parsed
+        return validated
 
     def _append_record(
         self,
@@ -377,3 +384,44 @@ def _optional_int(value: object) -> int | None:
     if type(value) is not int or value < 0:
         raise ModelSchemaError("The provider returned invalid token usage.")
     return value
+
+
+def _deepseek_json_schema(response_model: type[ResponseT]) -> dict[str, Any]:
+    """Convert nullable references to DeepSeek's supported typed-union form."""
+
+    schema = response_model.model_json_schema()
+    definitions = schema.get("$defs") or {}
+
+    def convert(node: object) -> object:
+        if isinstance(node, list):
+            return [convert(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        any_of = node.get("anyOf")
+        if isinstance(any_of, list) and len(any_of) == 2:
+            nulls = [item for item in any_of if item == {"type": "null"}]
+            non_nulls = [item for item in any_of if item != {"type": "null"}]
+            if len(nulls) == 1 and len(non_nulls) == 1:
+                non_null = non_nulls[0]
+                if isinstance(non_null, dict) and set(non_null) == {"$ref"}:
+                    reference = non_null["$ref"]
+                    prefix = "#/$defs/"
+                    if isinstance(reference, str) and reference.startswith(prefix):
+                        target = definitions.get(reference[len(prefix) :])
+                        if isinstance(target, dict):
+                            converted = convert(target)
+                            if isinstance(converted, dict):
+                                result = dict(converted)
+                                value_type = result.get("type")
+                                if isinstance(value_type, str):
+                                    result["type"] = [value_type, "null"]
+                                    for key, value in node.items():
+                                        if key != "anyOf":
+                                            result[key] = convert(value)
+                                    return result
+        return {key: convert(value) for key, value in node.items()}
+
+    converted_schema = convert(schema)
+    if not isinstance(converted_schema, dict):
+        raise ValueError("structured response schema must be an object")
+    return converted_schema

@@ -18,10 +18,12 @@ from app.evaluation.deepseek_provider import (
     TokenBudgetExceeded,
     UsageUnverifiable,
     _estimated_cost,
+    _deepseek_json_schema,
     _rate_period,
 )
 from app.evaluation.errors import EvaluationRunAbort
 from app.evaluation.real_contracts import DeepSeekRunConfig
+from app.agent import AnalysisReport
 
 
 def _understanding() -> IssueUnderstanding:
@@ -31,6 +33,16 @@ def _understanding() -> IssueUnderstanding:
         expected_behavior="Parsing succeeds.",
         search_terms=("parse",),
     )
+
+
+def test_deepseek_schema_rewrites_nullable_reference_without_weakening_contract() -> None:
+    schema = _deepseek_json_schema(AnalysisReport)
+    primary = schema["properties"]["primary_hypothesis"]
+
+    assert "anyOf" not in primary
+    assert primary["type"] == ["object", "null"]
+    assert "statement" in primary["properties"]
+    assert schema["additionalProperties"] is False
 
 
 def test_credentials_are_required_from_the_deepseek_environment_only(
