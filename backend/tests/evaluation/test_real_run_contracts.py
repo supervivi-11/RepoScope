@@ -31,7 +31,7 @@ def test_approved_deepseek_configuration_is_fixed_redacted_and_deterministic() -
     assert config.documented_model_version == "DeepSeek-V4-Flash-0731"
     assert config.api_surface == "responses"
     assert config.thinking == "enabled"
-    assert config.reasoning_effort == "high"
+    assert config.reasoning_effort == "low"
     assert config.temperature is None
     assert config.max_output_tokens == 8192
     assert config.max_total_tokens == 2_500_000

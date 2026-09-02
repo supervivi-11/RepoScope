@@ -8,12 +8,12 @@ Run the locked six-case development benchmark with one identical DeepSeek model 
 
 - Provider: DeepSeek official OpenAI-compatible API at `https://api.deepseek.com`.
 - Requested model: `deepseek-v4-flash` (currently documented as DeepSeek-V4-Flash-0731).
-- Thinking: enabled with `reasoning_effort=high`.
+- Thinking: enabled with `reasoning_effort=low`. Real pre-runs showed that `high` consumed both 4096 and 8192 output-token ceilings on simple structured tasks without producing a final JSON response; the fixed scored run therefore uses `low` for both systems.
 - Temperature: omitted because DeepSeek ignores sampling parameters in thinking mode.
 - Split: exactly the six locked `development` cases.
 - Dataset digest: read from and verified against `evals/benchmark-cases.v1.sha256` before any request.
 - Agent budget: at most 12 read-only tool calls, two evidence rounds, and two model retries.
-- Output-token budget: 8192 per request, fixed in the versioned run configuration and identical wherever the two systems perform the same report task. A 4096 preflight cap was rejected before any score because high reasoning consumed the entire allowance.
+- Output-token budget: 8192 per request, fixed in the versioned run configuration and identical wherever the two systems perform the same report task. It remains a ceiling; measured usage determines cost.
 - API credentials: `REPOSCOPE_DEEPSEEK_API_KEY` only; never accepted as CLI arguments or serialized.
 
 The issue-only baseline receives only repository identity, issue number, title, and body. RepoScope additionally receives the verified pre-fix snapshot through the existing static index and bounded read-only investigation tools. Neither system sees a fixing PR, diff, post-fix source, development gold, or hidden gold.

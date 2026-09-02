@@ -32,7 +32,7 @@ class DeepSeekRunConfig(RealEvaluationModel):
     documented_model_version: Literal["DeepSeek-V4-Flash-0731"]
     api_surface: Literal["responses"]
     thinking: Literal["enabled"]
-    reasoning_effort: Literal["high"]
+    reasoning_effort: Literal["low"]
     temperature: None = None
     max_output_tokens: Literal[8192]
     max_total_tokens: Literal[2_500_000]
@@ -58,7 +58,7 @@ class DeepSeekRunConfig(RealEvaluationModel):
             documented_model_version="DeepSeek-V4-Flash-0731",
             api_surface="responses",
             thinking="enabled",
-            reasoning_effort="high",
+            reasoning_effort="low",
             max_output_tokens=8192,
             max_total_tokens=2_500_000,
             max_tool_calls=12,

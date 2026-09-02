@@ -87,7 +87,7 @@ JSON Schema 位于 `evals/schemas/`。JSONL 使用 UTF-8、键排序、紧凑分
 
 ## DeepSeek Flash 真实 development 运行
 
-固定配置为 DeepSeek 官方 `https://api.deepseek.com`、`deepseek-v4-flash`、thinking enabled、`reasoning_effort=high`、temperature 省略、每次最多 8192 输出 Token、总计最多 2,500,000 Token、12 个工具调用、2 个证据轮次和 2 次模型重试。4096 上限在真实 development 预检中被推理 Token 完全占满，因此在任何可评分运行前版本化调整为 8192。费率卡固定为 `deepseek-v4-2026-08-16-v1`，实际账单仍以 DeepSeek 平台为准。
+固定配置为 DeepSeek 官方 `https://api.deepseek.com`、`deepseek-v4-flash`、thinking enabled、`reasoning_effort=low`、temperature 省略、每次最多 8192 输出 Token、总计最多 2,500,000 Token、12 个工具调用、2 个证据轮次和 2 次模型重试。真实预运行表明 `high` 会在简单结构化任务上连续占满 4096 和 8192 输出上限却不生成最终 JSON，因此正式评分运行在两种方法上统一固定为 `low`；8192 仅作为上限，费用按实际使用量计算。费率卡固定为 `deepseek-v4-2026-08-16-v1`，实际账单仍以 DeepSeek 平台为准。
 
 API Key 只读取当前进程的 `REPOSCOPE_DEEPSEEK_API_KEY` 环境变量，不读取 CLI、结果文件或 run config。不要把 Key 粘贴到聊天、命令参数、README 或 Git。Windows 用户可在“编辑账户的环境变量”中新增该变量，然后重启终端/Codex 让新进程继承。
 
