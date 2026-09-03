@@ -106,3 +106,27 @@
 **A 层缓修理由**：flask 案例检索未受阻（map 32 引用 + search 24 + read 1 全部成功），阶段 2 探针证据留档，v3 正式运行后按数据再评估。
 
 **待验证**：flask-2267 单案例诊断复跑（需用户预算确认，预计 <$0.15）；期望 `report_reason: primary_unvalidated → supported_primary`、`predicted_files` 非空。
+
+---
+
+## 2026-09-03 阶段 4（验证）：修复后 flask-2267 付费复跑——案例完全翻转
+
+**付费运行条目**（用户确认后执行）：
+- Run ID `20260903T092453Z-deepseek-v4-flash-diagnostic`；产物 `local/evaluation/diagnostics-20260903-flask-fix/`（诊断标记，非 benchmark）。
+- 用量：15 次调用（含预检），94,442 输入 / 16,765 输出 Token，**$0.062297**，117s，4 次工具 / 9 次模型调用，全部成功。
+
+**结果对比（同案例、同命令、修复前后）**：
+
+| 指标 | 修复前 (085620Z) | 修复后 (092453Z) |
+|---|---|---|
+| report_reason | primary_unvalidated | **supported_primary** |
+| outcome | insufficient_evidence | **root_cause_identified** |
+| predicted_files | `[]` | **`['flask/app.py']`** |
+| 验证通过引用 / 拒绝 | 0 / 5×excerpt_mismatch | **3 / 0** |
+| 输入 Token / 案例成本 | 112,208 / $0.0719 | **94,442 / $0.0581** |
+
+- 对照公开 dev gold（`gold_files=['flask/app.py']`）：**FileRecall@5 = 0.0 → 1.0**。
+- 机制确认：模型按新指令精确复制证据池位置（flask/app.py 1486–1511 三个范围），引用全部通过快照校验；上下文去重降低约 16% 输入 Token。
+- 累计诊断支出：$0.1372（两次单案例），均在用户逐次确认的预算内。
+
+**结论**：C 层修复在真实模型上生效。下一步（阶段 5，需用户预算确认 ≤$0.8）：正式 6 案例 v3 运行 → `evals/runs/deepseek-v4-flash-development-v3/` → development_score → 评估文档 → PR。
