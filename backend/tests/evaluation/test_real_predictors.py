@@ -33,6 +33,54 @@ SHA = "a" * 40
 SOURCE = "def parse(value):\n    return value\n"
 
 
+@pytest.mark.parametrize("tool_name", ["get_related_issues", "get_recent_commits"])
+@pytest.mark.anyio
+async def test_frozen_analyzer_cannot_read_live_history(tmp_path: Path, tool_name: str) -> None:
+    import json
+    from types import SimpleNamespace
+
+    class LiveHistorySpy:
+        calls = 0
+
+        async def fetch_related_issues(self, *args, **kwargs):
+            self.calls += 1
+            return (SimpleNamespace(number=99, title="POST_FIX_CANARY",
+                                    body="POST_FIX_CANARY", state="closed",
+                                    html_url="https://github.com/example/project/issues/99"),)
+
+        async def fetch_recent_commits(self, *args, **kwargs):
+            self.calls += 1
+            return (SimpleNamespace(sha="b" * 40, message="POST_FIX_CANARY",
+                                    html_url="https://github.com/example/project/commit/" + "b" * 40,
+                                    committed_at=datetime(2026, 9, 3, tzinfo=UTC)),)
+
+    snapshot = tmp_path / "snapshot"
+    source = snapshot / "src" / "parser.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8", newline="")
+    gateway = _repo_gateway()
+    gateway.responses[ModelPhase.TOOL_SELECTION].appendleft(ToolRequest(
+        tool_name=tool_name,
+        arguments={"query": "parse"} if tool_name == "get_related_issues" else {},
+    ))
+    live = LiveHistorySpy()
+    analyzer = RealRepoScopeAnalyzer(
+        model=gateway, configuration=DeepSeekRunConfig.approved(),
+        ledger=InMemoryCallLedger(max_total_tokens=2_500_000), github=live,
+    )
+    prediction = await analyzer(_case(snapshot), snapshot)
+    assert live.calls == 0
+    history = gateway.contexts[ModelPhase.REPORT_COMPOSITION][0]["tool_history"]
+    assert history[0]["tool_name"] == tool_name
+    assert history[0]["succeeded"] is False
+    assert history[0]["result_summary"] is None
+    assert history[0]["safe_error"] == "Tool execution failed safely."
+    assert "POST_FIX_CANARY" not in json.dumps(gateway.contexts)
+    assert history[1]["succeeded"] is True
+    assert prediction.citations == (_citation(),)
+    assert prediction.usage.tool_calls == 2
+
+
 class _GithubFake:
     async def fetch_recent_commits(self, *args, **kwargs):
         return ()
