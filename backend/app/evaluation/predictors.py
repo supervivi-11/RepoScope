@@ -28,6 +28,8 @@ from .contracts import EvaluationModel, EvaluationPrediction, EvaluationUsage
 from .deepseek_provider import InMemoryCallLedger
 from .real_contracts import DeepSeekRunConfig, ProviderCallUsage
 from .runners import IssueOnlyInput
+from .diagnostics import DiagnosticJournal
+from .diagnostics import DiagnosticWriteAbort
 
 
 class IssueOnlyModelOutput(EvaluationModel):
@@ -109,6 +111,7 @@ class RealRepoScopeAnalyzer:
         ledger: InMemoryCallLedger,
         github: Any,
         clock: Callable[[], datetime] | None = None,
+        diagnostics: DiagnosticJournal | None = None,
     ) -> None:
         self._model = model
         self._configuration = configuration
@@ -117,6 +120,7 @@ class RealRepoScopeAnalyzer:
         # client. A created-at filter cannot freeze later edits to Issue bodies.
         self._github = _OfflineEvaluationHistory()
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._diagnostics = diagnostics
 
     async def __call__(self, case: Any, snapshot_root: Path) -> EvaluationPrediction:
         start_index = len(self._ledger.records)
@@ -146,6 +150,7 @@ class RealRepoScopeAnalyzer:
             model=self._model,
             budget=budget,
             checkpointer=InMemorySaver(),
+            observer=self._diagnostics.start(case) if self._diagnostics else None,
         )
         state = build_analysis_state(
             analysis_id=f"eval-{case.case_id}",
@@ -157,21 +162,31 @@ class RealRepoScopeAnalyzer:
                 html_url=f"{case.repo_url}/issues/{case.issue_number}",
             ),
         )
-        output = await graph.ainvoke(
-            state,
-            {"configurable": {"thread_id": f"eval-{case.case_id}"}},
-        )
-        final_state = AnalysisState.model_validate(
-            {
-                field: output[field]
-                for field in AnalysisState.model_fields
-                if field in output
-            }
-        )
-        if "Model output could not be completed safely." in final_state.safe_errors:
-            raise RuntimeError("RepoScope evaluation encountered a model failure")
-        if final_state.report is None:
-            raise RuntimeError("RepoScope evaluation completed without a report")
+        try:
+            output = await graph.ainvoke(
+                state,
+                {"configurable": {"thread_id": f"eval-{case.case_id}"}},
+            )
+            final_state = AnalysisState.model_validate(
+                {
+                    field: output[field]
+                    for field in AnalysisState.model_fields
+                    if field in output
+                }
+            )
+            if "Model output could not be completed safely." in final_state.safe_errors:
+                raise RuntimeError("RepoScope evaluation encountered a model failure")
+            if final_state.report is None:
+                raise RuntimeError("RepoScope evaluation completed without a report")
+        except DiagnosticWriteAbort:
+            # Preserve the last durable prefix; do not attempt another write.
+            raise
+        except Exception:
+            if self._diagnostics:
+                self._diagnostics.finish(case.case_id, aborted=True)
+            raise
+        if self._diagnostics:
+            self._diagnostics.finish(case.case_id)
         records = self._ledger.records[start_index:]
         return EvaluationPrediction(
             predicted_files=_rank_report_files(final_state.report),

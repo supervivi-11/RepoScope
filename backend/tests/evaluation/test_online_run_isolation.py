@@ -362,12 +362,13 @@ async def test_online_run_validates_dataset_before_loading_credentials(
         )
 
 
-def test_prediction_artifacts_are_atomic_redacted_and_manifested(tmp_path: Path) -> None:
+@pytest.mark.parametrize("require_missing_diagnostics", [False, True])
+def test_prediction_artifacts_are_atomic_redacted_and_manifested(tmp_path: Path, require_missing_diagnostics: bool) -> None:
     case_ids = tuple(f"development-case-{number}" for number in range(1, 7))
     issue_results = tuple(_result(case_id, "issue_only") for case_id in case_ids)
     reposcope_results = tuple(_result(case_id, "reposcope") for case_id in case_ids)
 
-    manifest = write_prediction_artifacts(
+    arguments = dict(
         output_directory=tmp_path,
         run_id="20260902T010203Z-deepseek-v4-flash",
         configuration=DeepSeekRunConfig.approved(),
@@ -392,6 +393,12 @@ def test_prediction_artifacts_are_atomic_redacted_and_manifested(tmp_path: Path)
         started_at=datetime(2026, 9, 2, 12, 0, tzinfo=UTC),
         finished_at=datetime(2026, 9, 2, 12, 1, tzinfo=UTC),
     )
+    if require_missing_diagnostics:
+        with pytest.raises(ValueError, match="JSONL file is unavailable"):
+            write_prediction_artifacts(**arguments, diagnostics_required=True)
+        assert not (tmp_path / "prediction-manifest.v1.json").exists()
+        return
+    manifest = write_prediction_artifacts(**arguments)
 
     assert read_jsonl(
         tmp_path / "issue-only.results.v1.jsonl", BenchmarkResult

@@ -15,9 +15,11 @@ from .contracts import (
     ScriptedPrediction,
 )
 from .real_contracts import DeepSeekRunConfig, ProviderCallUsage, RunArtifactManifest
+from .diagnostics import CaseDiagnostic
 
 
 _SCHEMAS = {
+    "diagnostic.v1.schema.json": CaseDiagnostic,
     "candidate.v1.schema.json": CurationCandidate,
     "slot.v1.schema.json": BenchmarkSlot,
     "slot.v2.schema.json": LockedBenchmarkSlot,
