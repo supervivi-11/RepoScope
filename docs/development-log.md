@@ -142,3 +142,12 @@
 - **验收核对**：recall>0 ✓；≥4/6 案例有效引用 ✓（恰 4/6）；引用有效率 100% ✓；幻觉 0% ✓；≥ issue-only 基线 ✓。**Hidden 门槛未过**（0.667<0.70、+0.167<+0.20）→ hidden 不运行、不宣称产品效果达标。
 - 残余（详见 v3 文档"残余限制"）：flask 正式运行仍 `primary_unvalidated`（3 条引用已通过校验，但主假设引用池外合成位置；同案例修复后两次单例诊断均命中——生成波动）；invoke 7 次 read_code 失败 + 假设引用零匹配。下一迭代候选：位置级重锚定（需安全评审）、read_code 错误信息引导、A 层检索缺口。
 - 评估文档 `docs/evaluations/deepseek-v4-flash-development-v3.md`；本任务累计付费支出 **$0.659**（两次诊断 $0.137 + v3 $0.522），全部经用户逐次确认。
+
+---
+
+## 2026-09-03 收尾复验：当前代码端到端冒烟
+
+- agent 修复后重建 api/worker 镜像并 `docker compose up -d --wait`：postgres/api/worker/frontend 全部 healthy，migrate 一次性退出码 0。
+- 宿主机探针：`/health` 200、`/ready` 200（database ok）、`/api/v1/demo-cases` 200、前端 `:5173` 200。零模型调用、零费用。
+- 前端自阶段 1 验证后零变更（`git diff 3f070fa..HEAD -- frontend/` 为空），阶段 1 前端绿结论（65/65、typecheck、build）对当前代码仍成立。
+- 分支 `codex/recall-repair-v1`（9 提交）已推送 origin；GITHUB_TOKEN 无 PR 写权限（API 创建 403），入 main 方式待用户选择（网页 PR 或本地合并推送），合并后同步主工作区。
