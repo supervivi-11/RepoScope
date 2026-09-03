@@ -23,7 +23,7 @@ class _ScriptedGateway:
         self.responses = deque(responses)
         self.calls = 0
 
-    async def generate(self, *, phase, response_model, context):
+    async def generate(self, *, phase, response_model, context, attempt=1):
         self.calls += 1
         response = self.responses.popleft()
         if isinstance(response, Exception):

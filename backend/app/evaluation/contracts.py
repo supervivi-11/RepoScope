@@ -233,3 +233,23 @@ class EvaluationSummaryV2(EvaluationModel):
     systems: tuple[SystemMetrics, ...] = Field(min_length=1, max_length=2)
     file_recall_at_5_delta: float | None = None
     mrr_delta: float | None = None
+    run_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    configuration_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    prediction_manifest_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    provider: str | None = Field(default=None, min_length=1, max_length=100)
+    requested_model: str | None = Field(default=None, min_length=1, max_length=200)
+    documented_model_version: str | None = Field(
+        default=None, min_length=1, max_length=200
+    )
+    provider_backend_drift: bool | None = None
+    preflight_usage: EvaluationUsage | None = None
+    total_provider_usage: EvaluationUsage | None = None

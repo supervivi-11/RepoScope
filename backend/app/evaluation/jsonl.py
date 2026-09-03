@@ -108,6 +108,9 @@ def canonical_jsonl_bytes(rows: tuple[BaseModel, ...]) -> bytes:
 
 
 def _identity(item: BaseModel) -> tuple[str, ...]:
+    call_id = getattr(item, "call_id", None)
+    if isinstance(call_id, str):
+        return (call_id,)
     candidate_id = getattr(item, "candidate_id", None)
     if isinstance(candidate_id, str):
         return (candidate_id,)

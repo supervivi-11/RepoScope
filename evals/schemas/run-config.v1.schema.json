@@ -1,0 +1,140 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "api_surface": {
+      "const": "responses",
+      "title": "Api Surface",
+      "type": "string"
+    },
+    "base_url": {
+      "const": "https://api.deepseek.com",
+      "title": "Base Url",
+      "type": "string"
+    },
+    "case_count": {
+      "const": 6,
+      "title": "Case Count",
+      "type": "integer"
+    },
+    "documented_model_version": {
+      "const": "DeepSeek-V4-Flash-0731",
+      "title": "Documented Model Version",
+      "type": "string"
+    },
+    "max_evidence_rounds": {
+      "const": 2,
+      "title": "Max Evidence Rounds",
+      "type": "integer"
+    },
+    "max_output_tokens": {
+      "const": 16384,
+      "title": "Max Output Tokens",
+      "type": "integer"
+    },
+    "max_tool_calls": {
+      "const": 12,
+      "title": "Max Tool Calls",
+      "type": "integer"
+    },
+    "max_total_tokens": {
+      "const": 2500000,
+      "title": "Max Total Tokens",
+      "type": "integer"
+    },
+    "model_retries": {
+      "const": 2,
+      "title": "Model Retries",
+      "type": "integer"
+    },
+    "prompt_version": {
+      "const": "reposcope-eval-v1",
+      "title": "Prompt Version",
+      "type": "string"
+    },
+    "provider": {
+      "const": "deepseek_official",
+      "title": "Provider",
+      "type": "string"
+    },
+    "rate_card_retrieved_on": {
+      "const": "2026-09-01",
+      "title": "Rate Card Retrieved On",
+      "type": "string"
+    },
+    "rate_card_source": {
+      "const": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "title": "Rate Card Source",
+      "type": "string"
+    },
+    "rate_card_version": {
+      "const": "deepseek-v4-2026-08-16-v1",
+      "title": "Rate Card Version",
+      "type": "string"
+    },
+    "reasoning_effort": {
+      "const": "low",
+      "title": "Reasoning Effort",
+      "type": "string"
+    },
+    "request_timeout_seconds": {
+      "const": 120,
+      "title": "Request Timeout Seconds",
+      "type": "integer"
+    },
+    "requested_model": {
+      "const": "deepseek-v4-flash",
+      "title": "Requested Model",
+      "type": "string"
+    },
+    "runner_version": {
+      "const": "deepseek-development-v1",
+      "title": "Runner Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "reposcope.eval.run-config.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "split": {
+      "const": "development",
+      "title": "Split",
+      "type": "string"
+    },
+    "temperature": {
+      "default": null,
+      "title": "Temperature",
+      "type": "null"
+    },
+    "thinking": {
+      "const": "enabled",
+      "title": "Thinking",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "provider",
+    "base_url",
+    "requested_model",
+    "documented_model_version",
+    "api_surface",
+    "thinking",
+    "reasoning_effort",
+    "max_output_tokens",
+    "max_total_tokens",
+    "max_tool_calls",
+    "max_evidence_rounds",
+    "model_retries",
+    "request_timeout_seconds",
+    "split",
+    "case_count",
+    "runner_version",
+    "prompt_version",
+    "rate_card_version",
+    "rate_card_source",
+    "rate_card_retrieved_on"
+  ],
+  "title": "DeepSeekRunConfig",
+  "type": "object"
+}

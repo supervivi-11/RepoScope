@@ -11,6 +11,7 @@ from app.evaluation.catalog import load_candidate_catalog, load_slot_catalog
 from app.evaluation.contracts import BenchmarkCase, CurationCandidate, EvaluationPrediction
 from app.evaluation.jsonl import JsonlContractError, write_jsonl
 from app.evaluation.runners import IssueOnlyRunner, RepoScopeRunner
+from app.evaluation.errors import EvaluationRunAbort
 from app.evaluation.snapshot import snapshot_tree_digest
 from app.telemetry import StructuredTelemetry
 
@@ -179,6 +180,17 @@ async def test_runner_failures_become_safe_failed_rows_without_exception_text() 
     assert result.safe_error_code == "runner_failure"
     assert result.predicted_files == ()
     assert "SECRET_PROVIDER_KEY" not in result.model_dump_json()
+
+
+@pytest.mark.anyio
+async def test_runner_never_swallows_evaluation_safety_abort() -> None:
+    async def predictor(value):
+        raise EvaluationRunAbort("stop the paid run")
+
+    with pytest.raises(EvaluationRunAbort, match="stop the paid run"):
+        await IssueOnlyRunner(predictor, runner_id="scripted-v1").run(
+            _case(), dataset_digest="a" * 64
+        )
 
 
 @pytest.mark.anyio

@@ -14,6 +14,7 @@ from .contracts import (
     LockedBenchmarkSlot,
     ScriptedPrediction,
 )
+from .real_contracts import DeepSeekRunConfig, ProviderCallUsage, RunArtifactManifest
 
 
 _SCHEMAS = {
@@ -26,6 +27,9 @@ _SCHEMAS = {
     "summary.v1.schema.json": EvaluationSummary,
     "summary.v2.schema.json": EvaluationSummaryV2,
     "script.v1.schema.json": ScriptedPrediction,
+    "run-config.v1.schema.json": DeepSeekRunConfig,
+    "call-usage.v1.schema.json": ProviderCallUsage,
+    "manifest.v1.schema.json": RunArtifactManifest,
 }
 
 

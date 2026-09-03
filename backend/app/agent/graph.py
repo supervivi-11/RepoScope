@@ -11,6 +11,7 @@ from .gateway import (
     ModelGateway,
     ModelGatewayError,
     ModelPhase,
+    RetryableModelSchemaError,
     invoke_structured,
 )
 from .models import (
@@ -92,6 +93,8 @@ def build_investigation_graph(
                 "counters": counters,
                 "events": state.events + (event,),
             }
+        except RetryableModelSchemaError:
+            raise
         except ModelGatewayError as exc:
             attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(
@@ -158,6 +161,8 @@ def build_investigation_graph(
                     ),
                 )
             return update
+        except RetryableModelSchemaError:
+            raise
         except ModelGatewayError as exc:
             attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(
@@ -265,6 +270,8 @@ def build_investigation_graph(
                 "pending_tool_request": None,
                 "critique_sufficient": critique.sufficient,
             }
+        except RetryableModelSchemaError:
+            raise
         except ModelGatewayError as exc:
             attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(
@@ -304,6 +311,8 @@ def build_investigation_graph(
                 "counters": counters,
                 "events": state.events + (event,),
             }
+        except RetryableModelSchemaError:
+            raise
         except ModelGatewayError as exc:
             attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(
@@ -496,6 +505,8 @@ def build_investigation_graph(
                 "events": events,
                 "pending_feedback": None,
             }
+        except RetryableModelSchemaError:
+            raise
         except ModelGatewayError as exc:
             attempts = _failed_model_attempts(exc)
             counters = counters.model_copy(

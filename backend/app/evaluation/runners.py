@@ -11,6 +11,7 @@ from .contracts import (
     EvaluationModel,
     EvaluationPrediction,
 )
+from .errors import EvaluationRunAbort
 from .snapshot import snapshot_tree_digest
 
 
@@ -40,6 +41,8 @@ class IssueOnlyRunner:
                     issue_body=case.issue_body,
                 )
             )
+        except EvaluationRunAbort:
+            raise
         except Exception:
             return _failed(case, "issue_only", self._runner_id, dataset_digest)
         return _result(case, "issue_only", prediction, self._runner_id, dataset_digest)
@@ -70,6 +73,8 @@ class RepoScopeRunner:
                 raise ValueError("copied snapshot digest changed")
             try:
                 prediction = await self._analyzer(case, target)
+            except EvaluationRunAbort:
+                raise
             except Exception:
                 return _failed(case, "reposcope", self._runner_id, dataset_digest)
         return _result(case, "reposcope", prediction, self._runner_id, dataset_digest)

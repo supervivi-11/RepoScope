@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class ModelPhase(StrEnum):
+    ISSUE_ONLY_PREDICTION = "issue_only_prediction"
     ISSUE_UNDERSTANDING = "issue_understanding"
     TOOL_SELECTION = "tool_selection"
     EVIDENCE_CRITIQUE = "evidence_critique"
@@ -32,6 +33,10 @@ class ModelSchemaError(ModelGatewayError):
     pass
 
 
+class RetryableModelSchemaError(ModelSchemaError):
+    """A malformed structured response that may be retried within the fixed budget."""
+
+
 class ModelSafetyError(ModelGatewayError):
     pass
 
@@ -50,6 +55,7 @@ class ModelGateway(Protocol):
         phase: ModelPhase,
         response_model: type[ResponseT],
         context: dict[str, Any],
+        attempt: int = 1,
     ) -> ResponseT: ...
 
 
@@ -77,8 +83,9 @@ async def invoke_structured(
                 phase=phase,
                 response_model=response_model,
                 context=context,
+                attempt=attempts,
             )
-        except TransientModelError as exc:
+        except (TransientModelError, RetryableModelSchemaError) as exc:
             if attempts > retries:
                 exc.attempts = attempts
                 raise
@@ -154,6 +161,7 @@ class OpenAICompatibleGateway:
         phase: ModelPhase,
         response_model: type[ResponseT],
         context: dict[str, Any],
+        attempt: int = 1,
     ) -> ResponseT:
         structured = self._model.with_structured_output(
             response_model, method="json_schema"

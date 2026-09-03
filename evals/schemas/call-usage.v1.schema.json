@@ -1,0 +1,249 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "attempt": {
+      "maximum": 3,
+      "minimum": 1,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "cache_hit_usd_per_million": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Cache Hit Usd Per Million"
+    },
+    "cache_miss_usd_per_million": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Cache Miss Usd Per Million"
+    },
+    "cached_input_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cached Input Tokens"
+    },
+    "call_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "title": "Call Id",
+      "type": "string"
+    },
+    "case_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "estimated_cost_usd": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Estimated Cost Usd"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "input_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Tokens"
+    },
+    "latency_ms": {
+      "minimum": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output Tokens"
+    },
+    "output_usd_per_million": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Output Usd Per Million"
+    },
+    "phase": {
+      "maxLength": 100,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Phase",
+      "type": "string"
+    },
+    "rate_period": {
+      "enum": [
+        "peak",
+        "off_peak"
+      ],
+      "title": "Rate Period",
+      "type": "string"
+    },
+    "reasoning_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reasoning Tokens"
+    },
+    "requested_model": {
+      "const": "deepseek-v4-flash",
+      "title": "Requested Model",
+      "type": "string"
+    },
+    "returned_model": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Returned Model"
+    },
+    "safe_error_code": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z][a-z0-9_]{0,99}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Safe Error Code"
+    },
+    "schema_version": {
+      "const": "reposcope.eval.call-usage.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "status": {
+      "default": "success",
+      "enum": [
+        "success",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "system": {
+      "enum": [
+        "issue_only",
+        "reposcope",
+        "preflight"
+      ],
+      "title": "System",
+      "type": "string"
+    },
+    "system_fingerprint": {
+      "anyOf": [
+        {
+          "maxLength": 500,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "System Fingerprint"
+    }
+  },
+  "required": [
+    "schema_version",
+    "call_id",
+    "case_id",
+    "system",
+    "phase",
+    "attempt",
+    "requested_model",
+    "started_at",
+    "finished_at",
+    "latency_ms",
+    "rate_period",
+    "cache_hit_usd_per_million",
+    "cache_miss_usd_per_million",
+    "output_usd_per_million"
+  ],
+  "title": "ProviderCallUsage",
+  "type": "object"
+}

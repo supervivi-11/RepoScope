@@ -7,7 +7,13 @@
 分支：`codex/reposcope-v1`
 状态：Task 8 本地发布候选；未 push、未部署、未创建 tag、未发布 Release。
 
-本记录只写实际观察结果。没有运行真实模型或付费 API，没有提交分析任务，没有运行真实 benchmark，也没有生成或暗示 benchmark 分数。
+本记录只写实际观察结果。Task 8 发布验证当时没有运行真实模型或付费 API；后续 2026-09-02 development 评测已单独执行并记录如下。两个时间点不能混为一谈。
+
+## 后续 DeepSeek development 评测（2026-09-02）
+
+锁定的 6 个 development case 已使用 DeepSeek 官方 `deepseek-v4-flash` 完成 Issue-only 与 RepoScope 成对预测，随后由独立离线 scorer 读取 development gold。Issue-only FileRecall@5 为 `0.666667`、MRR 为 `0.583333`；RepoScope 两项均为 `0.000000`，6 份报告全部为 `insufficient_evidence` 且没有引用。成功运行总计 894,436 Token，按版本化费率卡估算 $0.497299168。
+
+该结果未达到 hidden 运行门槛，因此 hidden 未读取、未运行。完整配置、逐调用用量、失败尝试、逐案例结果和限制见 [DeepSeek development 评测报告](evaluations/deepseek-v4-flash-development-v1.md)。下文保留 Task 8 当时的历史验证记录，其中“未运行真实评测”只描述当时状态。
 
 ## 后续评测数据锁定（2026-09-01）
 
