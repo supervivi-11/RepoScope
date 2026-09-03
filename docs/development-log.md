@@ -77,3 +77,32 @@
   - D 上下文膨胀：每次调用重发全部证据全文（v2 ≈35K token/调用），放大抄写失败率。
 - 阶段 3 判别目标：用 diagnostics 区分各案例主导损失是 B（提前 insufficient）还是 C（rejection codes）还是 A（零命中占比）。
 - 环境备注：损坏 ACL 的 `.pytest_cache` 在完全访问下仍无法删除（owner 为沙箱 SID，需管理员 takeown）；已被 pytest flags 永久绕开，无功能影响。
+
+---
+
+## 2026-09-03 阶段 3：诊断工具落地 + 单案例付费诊断运行
+
+**实现**（commit `167c460`）：`online_run` 新增 `--case`（1–5 个，可重复）进入部分诊断分支——保留全部输入校验/gold 读取防护/预检/逐案例结果校验/失败即中止/诊断落盘校验；免除六例强制、manifest、complete-evidence 校验与干净源码树要求；新增 `diagnostic-run.v1.json` 标记（明示"非 benchmark 产物、不可评分"）；`validate_diagnostic_artifact` 增加 `allow_partial`（默认路径不变）。新增 15 项定向测试；全套 431 passed / 1 skipped；schema 无漂移。
+
+**付费运行条目**（用户确认后执行）：
+- Run ID `20260903T085620Z-deepseek-v4-flash-diagnostic`；案例 `pallets-flask-issue-2267`；产物 `local/evaluation/diagnostics-20260903-flask/`。
+- 用量：116,126 输入 / 20,670 输出 Token，**$0.074945**（含预检），133s，4 次工具、8 次模型调用全部成功、无 schema 重试。
+- **诊断确认（C 层为该案例唯一损失通道）**：工具全部成功（map 32 引用、search 20+4、read 1，证据池 61 条）→ critique 第一轮 `sufficient=True`（2 假设/6 引用，仅 2 个与工具读取位置精确匹配）→ compose 产出 **`root_cause_identified` + 1 个受影响文件** → validate 将全部 5 条引用以 `excerpt_mismatch` 拒绝 → `primary_unvalidated` → 整报降级清空（证据 61→0）→ `predicted_files=[]` → recall=0。
+- 结论：模型找到了根因，但引用转写不精确导致全部清空；B 层（critique 标准）本案例未构成阻塞；D 层（约 14K token/调用的重复上下文）是转写漂移放大器。
+- 阶段 4 修复方向（由上述证据确认）：① C——有效位置的 excerpt 漂移由"拒绝"改为"重锚定"（以快照原文确定性替换；commit/source mismatch 仍拒绝）；② D——上下文去重（tool_history 不再重复携带全文引用）；③ B——critique 增加明确充分性标准；④ 报告指令改为"位置必须精确、excerpt 可留空由系统补齐"。A 层（检索缺口）本轮缓修：flask 案例检索未受阻，探针证据留档。
+
+---
+
+## 2026-09-03 阶段 4（批 1）：C 层重锚定修复 + D/B 辅修
+
+**修复**（commit `7485ad4`，全部基于阶段 3 诊断实证）：
+- **C（主）**：`bind_tool_evidence` 扩展——显式引用位置与"工具读取且重校验通过"的证据条目精确匹配但 excerpt 漂移时，以规范快照原文替换（保留模型 explanation）；伪造文本从不持久化；未在工具池验证过的位置仍交给验证器拒绝。`validate_evidence` 零改动（commit/source/excerpt mismatch 拒绝语义不变）。注：指令中"excerpt 可留空"不可行——schema 强制非空，改为"verbatim 复制 + 系统重锚定"双保险。
+- **D（辅）**：调查上下文不再于 tool_history 重复携带全文引用（证据池已含同一内容）。
+- **B（辅）**：指令与 `CritiqueResult.sufficient` 描述加入充分性标准（位置合理解释症状即充分，疑虑记入 uncertainties）；检索零命中时换更短/不同标识符重试的策略提示。
+- 报告指令：精确复制证据池位置与 excerpt、只引用已出现范围、更宽范围先 read_code。
+
+**测试契约更新**（设计变更，非削弱）：① 已验证位置漂移 → 规范替换、报告存活、伪造文本不落盘（新增单测 + graph 级测试改写 + predictors 新增 `resourced_excerpt` 场景）；② `excerpt_mismatch` 拒绝覆盖改用未读位置 (2,2)，`bad_excerpt` 场景期望不变；③ unknown/wrong_sha/bad_tool "永不修复"测试保留原样。全套 **432 passed / 1 skipped**；schema 无漂移。
+
+**A 层缓修理由**：flask 案例检索未受阻（map 32 引用 + search 24 + read 1 全部成功），阶段 2 探针证据留档，v3 正式运行后按数据再评估。
+
+**待验证**：flask-2267 单案例诊断复跑（需用户预算确认，预计 <$0.15）；期望 `report_reason: primary_unvalidated → supported_primary`、`predicted_files` 非空。
