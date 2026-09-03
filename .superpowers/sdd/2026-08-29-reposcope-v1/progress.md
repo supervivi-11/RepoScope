@@ -1,5 +1,14 @@
 # SDD ledger — plan: docs/superpowers/plans/2026-08-29-reposcope-v1.md
 
+## 2026-09-03: PR #8 / #9 sequential merge and main verification complete
+
+- PR #8 head 1c1cf54e7ffee85c8983a48606ab4b2443289a8f merged into main with merge commit be03956f46c757d9e9f161193268f597d401b090.
+- PR #9 retargeted from codex/development-rerun-v2 to main. Head remained 7e30e89775aa006df2f7af7d6dc248bed32b7266; the remaining 13 changed files were diagnostic implementation, tests, schema and documentation. All head checks passed; the retargeted test-merge tree exactly matched the tested head tree.
+- PR #9 merged with merge commit ac8bd8b21abc01df844d47f138963a51aa754370. Final main push CI https://github.com/supervivi-11/RepoScope/actions/runs/33715172187 completed successfully (backend and frontend); PR #8's main CI 33715112128 also passed.
+- Fetched origin/main and verified its exact commit and full source tree against the reviewed diagnostic head. Historical v1/v2 manifest artifact hashes matched; evals/runs had no changes from 1c1cf54 to final main. Both remote feature branches retained.
+- This verification record is committed locally on codex/pr-8-9-merge-verification; no additional PR or direct main push. No new implementation, model calls, benchmark runs, hidden evaluation, deployment or release.
+- Batch complete. Any subsequent bounded real development-case diagnostic requires a separately agreed scope and API budget; the five historical insufficient-evidence cases are not claimed fixed.
+
 ## 2026-09-03: safe evaluation diagnostics complete (offline only)
 
 Based on 1c1cf54 / PR #8; branch codex/evaluation-diagnostics. Added optional host-only graph observer, closed versioned per-case diagnostic JSONL, atomic fail-closed journal and optional manifest artifact verified before gold. API/report/checkpoint/result contracts unchanged. Synthetic offline replay tests distinguish report binding, absent/invalid primary support, critique-only evidence, valid nonprimary evidence clearing, tool failures, empty search and budgets; corruption and I/O failure tests preserve safety. No paid calls, hidden data, new scores, deployment or release. Historical five-case downgrade causes remain unknown because old diagnostics were not retained. Report: docs/evaluations/safe-diagnostics-v1.md.
