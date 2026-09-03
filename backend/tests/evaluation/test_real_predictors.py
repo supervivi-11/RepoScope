@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict, deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -292,7 +293,7 @@ async def test_reposcope_analyzer_does_not_score_model_fallback_as_success(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("scenario", ["bound", "no_primary", "bad_excerpt", "bad_range", "valid_nonprimary", "critique_only", "model_insufficient"])
+@pytest.mark.parametrize("scenario", ["bound", "no_primary", "bad_excerpt", "resourced_excerpt", "bad_range", "valid_nonprimary", "critique_only", "model_insufficient"])
 async def test_diagnostic_replay_distinguishes_report_loss_without_changing_prediction(
     tmp_path: Path, scenario: str,
 ) -> None:
@@ -313,7 +314,19 @@ async def test_diagnostic_replay_distinguishes_report_loss_without_changing_pred
         elif scenario == "no_primary":
             report = report.model_copy(update={"primary_hypothesis": None})
         elif scenario == "bad_excerpt":
-            report = report.model_copy(update={"evidence": (_citation().model_copy(update={"excerpt": "UNTRUSTED_SECRET_CANARY"}),)})
+            drifted = _citation().model_copy(update={
+                "start_line": 2, "end_line": 2, "excerpt": "UNTRUSTED_SECRET_CANARY",
+            })
+            report = report.model_copy(update={
+                "evidence": (drifted,),
+                "primary_hypothesis": report.primary_hypothesis.model_copy(
+                    update={"evidence": (drifted.summary(),)}
+                ),
+            })
+        elif scenario == "resourced_excerpt":
+            report = report.model_copy(update={
+                "evidence": (_citation().model_copy(update={"excerpt": "UNTRUSTED_SECRET_CANARY"}),),
+            })
         elif scenario in {"bad_range", "valid_nonprimary"}:
             primary = report.primary_hypothesis.model_copy(update={"evidence": (_citation().summary().model_copy(update={"start_line": 20, "end_line": 21}),)})
             report = report.model_copy(update={"evidence": report.evidence if scenario == "valid_nonprimary" else (), "primary_hypothesis": primary})
@@ -340,13 +353,20 @@ async def test_diagnostic_replay_distinguishes_report_loss_without_changing_pred
     assert [step.sequence for step in row.steps] == list(range(1, len(row.steps) + 1))
     assert row.steps[-1].node == "prepare_review"
     validated = next(step for step in row.steps if step.node == "validate_report")
-    expected = {"bound": "supported_primary", "no_primary": "primary_absent", "bad_excerpt": "primary_unvalidated", "bad_range": "primary_unvalidated", "valid_nonprimary": "primary_unvalidated", "critique_only": "primary_unvalidated", "model_insufficient": "model_report_insufficient"}
+    expected = {"bound": "supported_primary", "no_primary": "primary_absent", "bad_excerpt": "primary_unvalidated", "resourced_excerpt": "supported_primary", "bad_range": "primary_unvalidated", "valid_nonprimary": "primary_unvalidated", "critique_only": "primary_unvalidated", "model_insufficient": "model_report_insufficient"}
     assert validated.report_reason == expected[scenario]
     if scenario == "bound":
         assert "report_evidence_bound" in validated.events
         assert len(validated.report_evidence_ids) == 1
     if scenario == "bad_excerpt":
         assert validated.rejection_codes == ("excerpt_mismatch",)
+    if scenario == "resourced_excerpt":
+        assert validated.rejection_codes == ()
+        assert "report_evidence_bound" in validated.events
+        assert diagnosed.citations[0].excerpt == SOURCE
+        assert "UNTRUSTED_SECRET_CANARY" not in json.dumps(
+            [citation.model_dump(mode="json") for citation in diagnosed.citations]
+        )
     if scenario == "valid_nonprimary":
         assert validated.valid_count == 1 and validated.report_evidence_ids == ()
         assert validated.evidence_after == 1  # valid evidence pool != retained report evidence

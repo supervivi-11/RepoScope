@@ -483,8 +483,13 @@ async def test_evidence_gathering_stops_after_two_rounds(tmp_path: Path) -> None
 
 
 @pytest.mark.anyio
-async def test_invalid_report_evidence_is_removed_and_downgraded(tmp_path: Path) -> None:
-    """Breaks if graph output can preserve fabricated root-cause evidence."""
+async def test_drifted_report_evidence_is_resourced_not_preserved(tmp_path: Path) -> None:
+    """Breaks if graph output can preserve fabricated root-cause evidence text.
+
+    A drifted excerpt at an exact, previously read tool location is re-sourced
+    from the snapshot: the report survives, but the fabricated text is replaced
+    by the canonical excerpt and never persisted.
+    """
     tools = _tools(tmp_path)
     invalid = _citation(excerpt="fabricated\n")
     model = _happy_model(report=_report(citation=invalid))
@@ -497,15 +502,13 @@ async def test_invalid_report_evidence_is_removed_and_downgraded(tmp_path: Path)
 
     paused = await graph.ainvoke(_state(tools, "analysis-invalid"), _config("invalid"))
 
-    assert paused["report"].outcome == "insufficient_evidence"
-    assert paused["report"].primary_hypothesis is None
-    assert paused["report"].confidence <= 0.25
+    report = paused["report"]
+    assert report.outcome == "root_cause_identified"
+    assert report.evidence[0].excerpt == SOURCE
+    assert "fabricated" not in report.model_dump_json()
     rejected = [item for item in paused["events"] if item.kind == "citation_rejected"]
-    assert len(rejected) == 1
-    assert rejected[0].citation.path == "src/parser.py"
-    assert rejected[0].safe_error == (
-        "Citation excerpt does not exactly match the snapshot."
-    )
+    assert rejected == []
+    assert any(item.kind == "report_evidence_bound" for item in paused["events"])
 
 
 @pytest.mark.anyio

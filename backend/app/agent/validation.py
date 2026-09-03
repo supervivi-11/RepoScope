@@ -138,20 +138,24 @@ def bind_tool_evidence(
     report: AnalysisReport,
     tool_evidence: tuple[EvidenceCitation, ...],
 ) -> AnalysisReport:
-    """Resolve explicit hypothesis references, never invent support for a claim.
+    """Resolve hypothesis references and re-source drifted excerpt transcription.
 
-    An explicit report citation (even a fabricated one) takes precedence and is
-    left for the normal validator to reject. Only missing payloads may be bound
-    from exact, previously read tool evidence; critique-authored text is excluded.
+    A hypothesis reference without an explicit payload may be bound from an
+    exact, previously read, and revalidated tool citation. An explicit
+    citation whose location exactly matches such a validated tool citation
+    keeps its explanation but receives the canonical snapshot excerpt, so
+    drifted model transcription is replaced instead of persisted. Citations at
+    locations that were never read and validated are left untouched for the
+    normal validator to reject; critique-authored text is excluded.
     """
-    existing = {_summary_key(item.summary()) for item in report.evidence}
     references = tuple(
         reference
         for hypothesis in (report.primary_hypothesis, *report.alternative_hypotheses)
         if hypothesis is not None
         for reference in hypothesis.evidence
     )
-    requested = {_summary_key(item) for item in references} - existing
+    explicit_keys = {_summary_key(item.summary()) for item in report.evidence}
+    requested = {_summary_key(item) for item in references} | explicit_keys
     candidates = tuple(
         item for item in _deduplicate_citations(tool_evidence)
         if _summary_key(item.summary()) in requested
@@ -161,7 +165,27 @@ def bind_tool_evidence(
     for candidate in candidates:
         if validate_evidence(index, (candidate,)).valid:
             available.setdefault(_summary_key(candidate.summary()), candidate)
+
+    reworked: list[EvidenceCitation] = []
+    changed = False
+    for item in report.evidence:
+        known = available.get(_summary_key(item.summary()))
+        if known is not None and known.excerpt != item.excerpt:
+            reworked.append(known.model_copy(update={"explanation": item.explanation}))
+            changed = True
+        else:
+            reworked.append(item)
     bound = report
+    if changed:
+        payload = bound.model_dump()
+        payload["evidence"] = tuple(item.model_dump() for item in reworked)
+        try:
+            bound = AnalysisReport.model_validate(payload)
+        except ValidationError:
+            # Preserve the public count and serialized byte limits, fail closed.
+            bound = report
+
+    existing = {_summary_key(item.summary()) for item in bound.evidence}
     for reference in references:
         key = _summary_key(reference)
         if key in existing or key not in available:

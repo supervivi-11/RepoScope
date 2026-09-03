@@ -22,7 +22,7 @@ SHA = "a" * 40
 SOURCE = "def parse(value):\n    return value\n"
 
 
-@pytest.mark.parametrize("bad", ["unknown", "wrong_sha", "explicit_fabrication", "bad_tool"])
+@pytest.mark.parametrize("bad", ["unknown", "wrong_sha", "bad_tool"])
 def test_reference_binding_never_repairs_fabricated_or_unseen_evidence(tmp_path: Path, bad: str) -> None:
     from app.agent.validation import bind_tool_evidence
 
@@ -34,8 +34,6 @@ def test_reference_binding_never_repairs_fabricated_or_unseen_evidence(tmp_path:
         reference = reference.model_copy(update={"path": "src/unseen.py"})
     elif bad == "wrong_sha":
         reference = reference.model_copy(update={"commit_sha": "b" * 40})
-    elif bad == "explicit_fabrication":
-        supplied = (citation.model_copy(update={"excerpt": "fabricated\n"}),)
     else:
         available = (citation.model_copy(update={"excerpt": "fabricated\n"}),)
     report = AnalysisReport(
@@ -49,6 +47,29 @@ def test_reference_binding_never_repairs_fabricated_or_unseen_evidence(tmp_path:
     sanitized, _ = downgrade_unsubstantiated_report(index, bound)
     assert sanitized.outcome == "insufficient_evidence"
     assert sanitized.evidence == ()
+
+
+def test_drifted_excerpt_at_verified_location_is_resourced_not_persisted(tmp_path: Path) -> None:
+    """A drifted transcription of an exact tool-read location is replaced by the
+    canonical snapshot excerpt; the fabricated text is never persisted."""
+    from app.agent.validation import bind_tool_evidence
+
+    citation = _citation()
+    drifted = citation.model_copy(update={"excerpt": "def parse(value):\n    return None\n"})
+    report = AnalysisReport(
+        outcome="root_cause_identified", issue_summary="Bug", observed_behavior="Invalid",
+        expected_behavior="Valid", confidence=0.9,
+        primary_hypothesis=Hypothesis(statement="Missing check", confidence=0.9, evidence=(citation.summary(),)),
+        evidence=(drifted,),
+    )
+    index = _index(tmp_path)
+    bound = bind_tool_evidence(index, report, (citation,))
+    sanitized, validation = downgrade_unsubstantiated_report(index, bound)
+
+    assert sanitized.outcome == "root_cause_identified"
+    assert sanitized.evidence == (citation,)
+    assert validation.invalid == ()
+    assert "return None" not in sanitized.model_dump_json()
 
 
 def _index(tmp_path: Path) -> PythonRepositoryIndex:

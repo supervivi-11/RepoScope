@@ -363,7 +363,12 @@ class ToolResultSummary(FrozenModel):
 
 
 class CritiqueResult(FrozenModel):
-    sufficient: bool
+    sufficient: bool = Field(
+        description=(
+            "True once identified source locations plausibly explain the "
+            "reported symptom; record remaining doubts as uncertainties."
+        )
+    )
     hypotheses: tuple[Hypothesis, ...] = Field(default=(), max_length=8)
     evidence: tuple[EvidenceCitation, ...] = Field(default=(), max_length=64)
     uncertainties: tuple[str, ...] = Field(default=(), max_length=32)
