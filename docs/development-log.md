@@ -151,3 +151,12 @@
 - 宿主机探针：`/health` 200、`/ready` 200（database ok）、`/api/v1/demo-cases` 200、前端 `:5173` 200。零模型调用、零费用。
 - 前端自阶段 1 验证后零变更（`git diff 3f070fa..HEAD -- frontend/` 为空），阶段 1 前端绿结论（65/65、typecheck、build）对当前代码仍成立。
 - 分支 `codex/recall-repair-v1`（9 提交）已推送 origin；GITHUB_TOKEN 无 PR 写权限（API 创建 403），入 main 方式待用户选择（网页 PR 或本地合并推送），合并后同步主工作区。
+
+---
+
+## 2026-09-03 收尾：入 main 与主工作区同步
+
+- **PR API 路线放弃**：四次 `POST /pulls` 均 403（"Resource not accessible by personal access token"）。诊断：`.env` 细粒度令牌（`github_pat_` 前缀，账号 supervivi-11）读权限正常（GET repo/pulls 200、permissions 显示 push:true）但缺 **Pull requests: write**；用户三次表示已修改权限，令牌值哈希四次均为 `a6cb3ad5` 未变，权限编辑从未生效到该令牌（未保存或改错条目）。
+- **本地合并**（按事先告知用户的回退路径执行）：合并条件先经核验——`92f9251` 为分支祖先、本地 main 落后 origin/main 52 提交且未在任何工作区检出、主工作区 detached 且零脏文件。`git push origin codex/recall-repair-v1:main` 快进成功：**origin/main `ac8bd8b` → `e624796`**（10 提交全部入 main）。
+- 主工作区从 detached `92f9251` 切换到 `main` 同步至同版本（`.env` 等未跟踪文件不受影响）。
+- 令牌安全提醒（已告知用户）：该令牌对仓库有 admin 级可见性，建议用后在 GitHub 设置中 revoke；旧 `GITHUB_TOKEN` 同时是产品运行时令牌，替换值时需保证含 Issues 读权限，否则线上取 Issue 功能会坏。
