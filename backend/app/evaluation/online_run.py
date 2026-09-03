@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -60,6 +61,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-digest-file", required=True)
     parser.add_argument("--snapshots-root", required=True)
     parser.add_argument("--output-directory", required=True)
+    parser.add_argument(
+        "--case",
+        action="append",
+        dest="case_filter",
+        metavar="CASE_ID",
+        help=(
+            "run a partial diagnostic for one to five locked development cases; "
+            "diagnostic output is never a benchmark artifact (no manifest, not scorable)"
+        ),
+    )
     return parser
 
 
@@ -147,9 +158,15 @@ async def run_paired_predictions(
     dataset_digest: str,
     snapshots_root: Path,
     execute: CaseExecutor,
+    require_complete_split: bool = True,
 ) -> tuple[tuple[BenchmarkResult, ...], tuple[BenchmarkResult, ...]]:
-    if len(cases) != 6 or any(case.split != "development" for case in cases):
+    if any(case.split != "development" for case in cases):
         raise ValueError("paired prediction requires exactly six development cases")
+    if require_complete_split:
+        if len(cases) != 6:
+            raise ValueError("paired prediction requires exactly six development cases")
+    elif not 1 <= len(cases) <= 5:
+        raise ValueError("partial diagnostics require one to five development cases")
     issue_only: list[BenchmarkResult] = []
     reposcope: list[BenchmarkResult] = []
     for case in cases:
@@ -442,21 +459,48 @@ class _RealCaseExecutor:
         )
 
 
-async def _run_online(args: argparse.Namespace) -> RunArtifactManifest:
-    cases_path = Path(args.cases)
-    digest_path = Path(args.dataset_digest_file)
-    snapshots_root = Path(args.snapshots_root)
-    output_directory = Path(args.output_directory)
-    cases, digest = load_development_inputs(
-        cases_path=cases_path,
-        digest_path=digest_path,
-        snapshots_root=snapshots_root,
-    )
-    configuration = DeepSeekRunConfig.approved()
-    if output_directory.exists():
-        raise ValueError("output directory must not already exist")
-    reposcope_commit, dependency_versions = _source_provenance(Path.cwd())
-    diagnostics = DiagnosticJournal(output_directory / DIAGNOSTIC_FILENAME, dataset_digest=digest)
+DIAGNOSTIC_MARKER_FILENAME = "diagnostic-run.v1.json"
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticRunSummary:
+    run_id: str
+    case_ids: tuple[str, ...]
+    output_directory: Path
+
+
+def select_diagnostic_cases(
+    development: tuple[BenchmarkCase, ...], requested: tuple[str, ...]
+) -> tuple[BenchmarkCase, ...]:
+    """Pick one to five locked development cases for a partial diagnostic run."""
+    unique = tuple(dict.fromkeys(requested))
+    if not 1 <= len(unique) <= 5:
+        raise ValueError(
+            "diagnostic mode accepts one to five cases; "
+            "omit --case for the formal six-case run"
+        )
+    known = {case.case_id: case for case in development}
+    if any(case_id not in known for case_id in unique):
+        raise ValueError("requested diagnostic cases are not locked development cases")
+    return tuple(known[case_id] for case_id in unique)
+
+
+async def _execute_paired_predictions(
+    *,
+    cases: tuple[BenchmarkCase, ...],
+    digest: str,
+    snapshots_root: Path,
+    output_directory: Path,
+    configuration: DeepSeekRunConfig,
+    diagnostics: DiagnosticJournal,
+    require_complete_split: bool,
+) -> tuple[
+    tuple[BenchmarkResult, ...],
+    tuple[BenchmarkResult, ...],
+    tuple[ProviderCallUsage, ...],
+    datetime,
+    datetime,
+]:
     from app.ingestion import GithubClient
 
     from .deepseek_provider import (
@@ -496,9 +540,176 @@ async def _run_online(args: argparse.Namespace) -> RunArtifactManifest:
             dataset_digest=digest,
             snapshots_root=snapshots_root,
             execute=executor,
+            require_complete_split=require_complete_split,
         )
-    now = datetime.now(UTC)
-    run_id = f"{now:%Y%m%dT%H%M%SZ}-deepseek-v4-flash"
+    return issue_only, reposcope, ledger.records, started_at, datetime.now(UTC)
+
+
+def write_diagnostic_artifacts(
+    *,
+    output_directory: Path,
+    run_id: str,
+    configuration: DeepSeekRunConfig,
+    dataset_digest: str,
+    requested_cases: tuple[str, ...],
+    issue_only_results: tuple[BenchmarkResult, ...],
+    reposcope_results: tuple[BenchmarkResult, ...],
+    call_usage: tuple[ProviderCallUsage, ...],
+    reproduction_commands: tuple[str, ...],
+    started_at: datetime,
+    finished_at: datetime,
+) -> DiagnosticRunSummary:
+    """Write developer-facing partial artifacts; never a benchmark manifest.
+
+    The marker file is intentionally not part of the versioned benchmark
+    contracts: a partial run cannot be scored by development_score and must
+    not be mistaken for a formal six-case prediction directory.
+    """
+    validate_diagnostic_artifact(
+        output_directory / DIAGNOSTIC_FILENAME,
+        results=reposcope_results,
+        dataset_digest=dataset_digest,
+        allow_partial=True,
+    )
+    output_directory.mkdir(parents=True, exist_ok=True)
+    config_path = output_directory / "run-config.json"
+    issue_path = output_directory / "issue-only.results.v1.jsonl"
+    reposcope_path = output_directory / "reposcope.results.v1.jsonl"
+    usage_path = output_directory / "call-usage.v1.jsonl"
+    reproduce_path = output_directory / "reproduce.txt"
+    _write_json(config_path, configuration.model_dump(mode="json"))
+    write_jsonl(issue_path, issue_only_results)
+    write_jsonl(reposcope_path, reposcope_results)
+    write_jsonl(usage_path, call_usage)
+    _write_bytes(
+        reproduce_path,
+        ("\n".join(reproduction_commands).rstrip() + "\n").encode("utf-8"),
+    )
+    _write_json(
+        output_directory / DIAGNOSTIC_MARKER_FILENAME,
+        {
+            "mode": "diagnostic",
+            "run_id": run_id,
+            "dataset_digest": dataset_digest,
+            "requested_cases": list(requested_cases),
+            "completed_cases": [item.case_id for item in reposcope_results],
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "note": (
+                "Partial diagnostic run for debugging only; not a benchmark "
+                "artifact, no prediction manifest, and not scorable by "
+                "development_score."
+            ),
+        },
+    )
+    return DiagnosticRunSummary(
+        run_id=run_id,
+        case_ids=tuple(item.case_id for item in reposcope_results),
+        output_directory=output_directory,
+    )
+
+
+async def _run_diagnostic(
+    *,
+    requested: tuple[str, ...],
+    cases: tuple[BenchmarkCase, ...],
+    digest: str,
+    snapshots_root: Path,
+    output_directory: Path,
+    configuration: DeepSeekRunConfig,
+    cases_path: Path,
+    digest_path: Path,
+) -> DiagnosticRunSummary:
+    selected = select_diagnostic_cases(cases, requested)
+    diagnostics = DiagnosticJournal(
+        output_directory / DIAGNOSTIC_FILENAME, dataset_digest=digest
+    )
+    issue_only, reposcope, call_usage, started_at, finished_at = (
+        await _execute_paired_predictions(
+            cases=selected,
+            digest=digest,
+            snapshots_root=snapshots_root,
+            output_directory=output_directory,
+            configuration=configuration,
+            diagnostics=diagnostics,
+            require_complete_split=False,
+        )
+    )
+    run_id = f"{finished_at:%Y%m%dT%H%M%SZ}-deepseek-v4-flash-diagnostic"
+    diagnostic_command = _powershell_command(
+        r".\.venv\Scripts\python.exe",
+        "-m",
+        "app.evaluation.online_run",
+        "--split",
+        "development",
+        "--cases",
+        str(cases_path),
+        "--dataset-digest-file",
+        str(digest_path),
+        "--snapshots-root",
+        str(snapshots_root),
+        "--output-directory",
+        str(output_directory),
+        *(flag for case_id in requested for flag in ("--case", case_id)),
+    )
+    return write_diagnostic_artifacts(
+        output_directory=output_directory,
+        run_id=run_id,
+        configuration=configuration,
+        dataset_digest=digest,
+        requested_cases=requested,
+        issue_only_results=issue_only,
+        reposcope_results=reposcope,
+        call_usage=call_usage,
+        reproduction_commands=(diagnostic_command,),
+        started_at=started_at,
+        finished_at=finished_at,
+    )
+
+
+async def _run_online(
+    args: argparse.Namespace,
+) -> RunArtifactManifest | DiagnosticRunSummary:
+    cases_path = Path(args.cases)
+    digest_path = Path(args.dataset_digest_file)
+    snapshots_root = Path(args.snapshots_root)
+    output_directory = Path(args.output_directory)
+    cases, digest = load_development_inputs(
+        cases_path=cases_path,
+        digest_path=digest_path,
+        snapshots_root=snapshots_root,
+    )
+    configuration = DeepSeekRunConfig.approved()
+    if output_directory.exists():
+        raise ValueError("output directory must not already exist")
+    requested = tuple(dict.fromkeys(getattr(args, "case_filter", None) or ()))
+    if requested:
+        return await _run_diagnostic(
+            requested=requested,
+            cases=cases,
+            digest=digest,
+            snapshots_root=snapshots_root,
+            output_directory=output_directory,
+            configuration=configuration,
+            cases_path=cases_path,
+            digest_path=digest_path,
+        )
+    reposcope_commit, dependency_versions = _source_provenance(Path.cwd())
+    diagnostics = DiagnosticJournal(
+        output_directory / DIAGNOSTIC_FILENAME, dataset_digest=digest
+    )
+    issue_only, reposcope, call_usage, started_at, finished_at = (
+        await _execute_paired_predictions(
+            cases=cases,
+            digest=digest,
+            snapshots_root=snapshots_root,
+            output_directory=output_directory,
+            configuration=configuration,
+            diagnostics=diagnostics,
+            require_complete_split=True,
+        )
+    )
+    run_id = f"{finished_at:%Y%m%dT%H%M%SZ}-deepseek-v4-flash"
     prediction_command = _powershell_command(
         r".\.venv\Scripts\python.exe",
         "-m",
@@ -536,7 +747,7 @@ async def _run_online(args: argparse.Namespace) -> RunArtifactManifest:
         dataset_digest=digest,
         issue_only_results=issue_only,
         reposcope_results=reposcope,
-        call_usage=ledger.records,
+        call_usage=call_usage,
         reproduction_commands=(prediction_command, scoring_command),
         reposcope_commit=reposcope_commit,
         dependency_versions=dependency_versions,
@@ -546,7 +757,7 @@ async def _run_online(args: argparse.Namespace) -> RunArtifactManifest:
             for system in ("issue_only", "reposcope")
         ),
         started_at=started_at,
-        finished_at=now,
+        finished_at=finished_at,
         diagnostics_required=True,
     )
 
@@ -602,7 +813,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     )
     try:
-        manifest = asyncio.run(_run_online(args))
+        outcome = asyncio.run(_run_online(args))
     except ValidationError:
         print(
             "evaluation failed safely: credentials_not_configured",
@@ -621,10 +832,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OSError:
         print("evaluation failed safely: artifact_io_failed", file=sys.stderr)
         return 2
-    print(
-        f"wrote complete six-case paired predictions for run {manifest.run_id}; "
-        "gold was unavailable and no score was computed"
-    )
+    if isinstance(outcome, RunArtifactManifest):
+        print(
+            f"wrote complete six-case paired predictions for run {outcome.run_id}; "
+            "gold was unavailable and no score was computed"
+        )
+    else:
+        print(
+            f"wrote diagnostic run {outcome.run_id} for cases "
+            f"{', '.join(outcome.case_ids)}; not a benchmark artifact, "
+            "gold was unavailable and no score was computed"
+        )
     return 0
 
 

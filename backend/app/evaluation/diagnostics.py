@@ -197,13 +197,20 @@ class DiagnosticJournal:
         self._save(row.model_copy(update={"status": "aborted" if aborted else "complete", "error_code": "analysis_aborted" if aborted else None}))
 
 
-def validate_diagnostic_artifact(path: Path, *, results: tuple[BenchmarkResult, ...], dataset_digest: str, cases: tuple[BenchmarkCase, ...] | None = None) -> None:
+def validate_diagnostic_artifact(path: Path, *, results: tuple[BenchmarkResult, ...], dataset_digest: str, cases: tuple[BenchmarkCase, ...] | None = None, allow_partial: bool = False) -> None:
     if path.is_symlink():
         raise ValueError("diagnostic artifact must not be a symlink")
+    if allow_partial and not 1 <= len(results) <= 5:
+        raise ValueError("partial diagnostics require one to five predictions")
     rows = read_jsonl(path, CaseDiagnostic)
     by_case = {row.case_id: row for row in rows}
-    if set(by_case) != {result.case_id for result in results} or len(rows) != 6:
-        raise ValueError("diagnostics must cover the six predictions")
+    expected_rows = len(results) if allow_partial else 6
+    if set(by_case) != {result.case_id for result in results} or len(rows) != expected_rows:
+        raise ValueError(
+            "diagnostics must cover every prediction of the run"
+            if allow_partial
+            else "diagnostics must cover the six predictions"
+        )
     for result in results:
         row = by_case[result.case_id]
         if row.status != "complete" or row.dataset_digest != dataset_digest:
