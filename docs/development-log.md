@@ -130,3 +130,15 @@
 - 累计诊断支出：$0.1372（两次单案例），均在用户逐次确认的预算内。
 
 **结论**：C 层修复在真实模型上生效。下一步（阶段 5，需用户预算确认 ≤$0.8）：正式 6 案例 v3 运行 → `evals/runs/deepseek-v4-flash-development-v3/` → development_score → 评估文档 → PR。
+
+---
+
+## 2026-09-03 阶段 5：正式 6 案例 v3 运行——开发集达标
+
+**付费运行条目**（用户确认 ≤$0.8 后执行）：
+- Run ID `20260903T095547Z-deepseek-v4-flash`；产物 `evals/runs/deepseek-v4-flash-development-v3/`（新目录，v1/v2 未覆盖）；clean source commit `30eb3c8`，working_tree_clean=true。
+- 用量：91 次调用（84 成功、7 次 schema_error 均在重试内恢复），817,359 输入 / 170,523 输出 Token，**$0.522130**（含预检 $0.0016），20 分 24 秒。
+- 离线评分（免费，独立进程读 gold）：RepoScope FileRecall@5 = MRR = **0.666667**（v2 为 0.166667），4/6 案例 `root_cause_identified` 且首命中均排名 1；**20/20 引用有效、幻觉率 0**；本轮 Issue-only 0.5 / 0.375，差值 +0.167 / +0.292。
+- **验收核对**：recall>0 ✓；≥4/6 案例有效引用 ✓（恰 4/6）；引用有效率 100% ✓；幻觉 0% ✓；≥ issue-only 基线 ✓。**Hidden 门槛未过**（0.667<0.70、+0.167<+0.20）→ hidden 不运行、不宣称产品效果达标。
+- 残余（详见 v3 文档"残余限制"）：flask 正式运行仍 `primary_unvalidated`（3 条引用已通过校验，但主假设引用池外合成位置；同案例修复后两次单例诊断均命中——生成波动）；invoke 7 次 read_code 失败 + 假设引用零匹配。下一迭代候选：位置级重锚定（需安全评审）、read_code 错误信息引导、A 层检索缺口。
+- 评估文档 `docs/evaluations/deepseek-v4-flash-development-v3.md`；本任务累计付费支出 **$0.659**（两次诊断 $0.137 + v3 $0.522），全部经用户逐次确认。
