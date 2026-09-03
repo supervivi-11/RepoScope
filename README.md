@@ -2,11 +2,11 @@
 
 RepoScope 是一个面向陌生 Python 仓库的 Bug 调查助手：输入公开 GitHub 仓库与 Issue 编号，它在固定 commit 的源码快照上进行静态、只读调查，并输出可校验的根因候选、影响文件、修改步骤与测试建议。
 
-> 当前状态：v0.1.0 候选版本仍在开发中。实时分析只供本地运行；公网内容仅回放三个明确标注的产品流程占位 Demo。2026-09-02 的 6-case DeepSeek Flash development 评测已经完成，但 RepoScope 的 FileRecall@5 为 0，低于 Issue-only 的 0.666667，因此尚不具备运行 hidden 集的条件。
+> 当前状态：v0.1.0 候选版本仍在开发中。实时分析只供本地运行；公网内容仅回放三个明确标注的产品流程占位 Demo。2026-09-03 的第二轮 6-case DeepSeek Flash development 评测已完成：RepoScope 的 FileRecall@5 为 0.166667，低于本轮 Issue-only 的 0.500000；五例仍证据不足，hidden 未运行。
 
 ## English summary
 
-RepoScope investigates public Python GitHub bug issues against immutable pre-fix source snapshots. It exposes only bounded read-only tools and validates citations deterministically. Live analysis is local-only and the public demo is static. A real six-case DeepSeek Flash development run scored 0.000000 FileRecall@5 for RepoScope versus 0.666667 for the issue-only baseline, so no hidden-set or superiority claim is made.
+RepoScope investigates public Python GitHub bug issues against immutable pre-fix source snapshots. It exposes only bounded read-only tools and validates citations deterministically. Live analysis is local-only and the public demo is static. The second real six-case DeepSeek Flash development run scored 0.166667 FileRecall@5 for RepoScope versus 0.500000 for the issue-only baseline. Five cases still lacked sufficient evidence; no hidden-set or superiority claim is made.
 
 ## 它解决什么问题
 
@@ -104,7 +104,7 @@ Task 8 的实际命令、环境与观察结果见 [发布验证记录](docs/rele
 .\.venv\Scripts\python.exe -m app.evaluation.cli score --split development --cases evals\benchmark-cases.v1.jsonl --dataset-digest-file evals\benchmark-cases.v1.sha256 --gold evals\development-gold.v1.jsonl --results local\evaluation\issue-only-results.v1.jsonl --snapshots-root local\evaluation\snapshots --output local\evaluation\issue-only-summary.v2.json
 ```
 
-这里的内置适配器是确定性的 scripted runner，用来验证输入隔离、结果契约和评分管线。真实 DeepSeek development 运行、失败结论与机器可读产物见 [评测报告](docs/evaluations/deepseek-v4-flash-development-v1.md)；数据选择、分割、指标定义和防答案泄漏规则见 [evals/README.md](evals/README.md)。
+这里的内置适配器是确定性的 scripted runner，用来验证输入隔离、结果契约和评分管线。真实 DeepSeek development 运行、未达标结论与机器可读产物见 [v2 评测报告](docs/evaluations/deepseek-v4-flash-development-v2.md)；[v1 历史结果](docs/evaluations/deepseek-v4-flash-development-v1.md) 原样保留。数据选择、分割、指标定义和防答案泄漏规则见 [evals/README.md](evals/README.md)。
 
 ## 安全与贡献
 
