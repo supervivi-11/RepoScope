@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -211,5 +213,42 @@ def _extract_citations(result: Any) -> tuple[EvidenceCitation, ...]:
 def _result_summary(
     result: Any, citations: tuple[EvidenceCitation, ...]
 ) -> str:
-    name = type(result).__name__
-    return f"{name}; citations={len(citations)}"
+    # Model-facing observations are distinct from redacted public tool events.
+    # Source text already lives in citations: retain navigation metadata here.
+    for limit in (40, 20, 10, 5, 2, 1):
+        truncated = False
+
+        def project(value: Any, depth: int = 0) -> Any:
+            nonlocal truncated
+            if depth > 6:
+                truncated = True
+                return None
+            if isinstance(value, SourceExcerpt):
+                return value.location.model_dump(mode="json")
+            if isinstance(value, BaseModel):
+                return {
+                    name: project(getattr(value, name), depth + 1)
+                    for name in type(value).model_fields
+                }
+            if isinstance(value, (tuple, list)):
+                truncated |= len(value) > limit
+                return [project(item, depth + 1) for item in value[:limit]]
+            if isinstance(value, str):
+                maximum = min(1000, limit * 100)
+                truncated |= len(value) > maximum
+                return value[:maximum]
+            if isinstance(value, datetime):
+                return value.isoformat()
+            if value is None or type(value) in {bool, int, float}:
+                return value
+            return type(value).__name__
+
+        data = project(result)
+        encoded = json.dumps({
+            "type": type(result).__name__, "untrusted_data": True,
+            "data": data, "citations": len(citations), "truncated": truncated,
+        }, ensure_ascii=True, separators=(",", ":"))
+        if len(encoded) <= 32768:
+            return encoded
+    return json.dumps({"type": type(result).__name__, "untrusted_data": True,
+                       "data": None, "truncated": True})

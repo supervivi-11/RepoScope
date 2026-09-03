@@ -1,5 +1,9 @@
 # SDD ledger — plan: docs/superpowers/plans/2026-08-29-reposcope-v1.md
 
+## 2026-09-03: evidence propagation repair
+
+Implementation and offline verification complete on `codex/evidence-propagation`, based on PR #6 (`f1c74c4`). Restored bounded tool navigation observations and follow-up hypotheses/gaps; bound explicit report references only to validated successful tool reads, including revision. No model calls or new benchmark scores. Backend 392 passed/1 skipped; frontend 65 passed; Chromium live 1/static 3; schema, dataset, build and security checks passed. Latest user instruction replaces repeated reviewer routing with focused regression verification. Historical six-case per-node causes remain unproven because v1 did not retain node outputs. Report: `docs/evaluations/evidence-propagation-repair-v1.md`. Next step: separately approved development rerun, not hidden.
+
 ## Preflight interface scan
 
 | Tasks | Producer / consumer interface | Finding |

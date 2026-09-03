@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,55 @@ from app.investigation import (
 
 
 SHA = "a" * 40
+
+
+@pytest.mark.anyio
+async def test_repository_map_reaches_model_as_bounded_navigation_data(tmp_path: Path) -> None:
+    result = await dispatch_tool_request(
+        _tools(tmp_path), ToolRequest(tool_name="get_repository_map")
+    )
+    payload = json.loads(result.result_summary)
+    assert "src.parser" in payload["data"]["python_modules"]
+    assert "src" in payload["data"]["top_level_entries"]
+    assert payload["untrusted_data"] is True
+    assert len(result.result_summary.encode("utf-8")) <= 32768
+
+
+@pytest.mark.anyio
+async def test_search_observation_preserves_query_and_hit_locations(tmp_path: Path) -> None:
+    result = await dispatch_tool_request(
+        _tools(tmp_path), ToolRequest(tool_name="search_code", arguments={"query": "parse"})
+    )
+    payload = json.loads(result.result_summary)
+    assert payload["data"]["query"] == "parse"
+    assert payload["data"]["hits"][0]["source"]["path"] == "src/parser.py"
+    assert "excerpt" not in payload["data"]["hits"][0]["source"]
+    assert result.citations[0].excerpt
+
+
+def test_large_navigation_observation_is_valid_bounded_json(tmp_path: Path) -> None:
+    from app.agent.tool_dispatch import _result_summary
+
+    repository_map = _tools(tmp_path).get_repository_map().model_copy(update={
+        "python_modules": tuple("模块" * 500 + str(i) for i in range(1000)),
+    })
+    observation = _result_summary(repository_map, ())
+    assert len(observation.encode("utf-8")) <= 32768
+    assert json.loads(observation)["truncated"] is True
+
+
+def test_history_metadata_is_visible_but_never_becomes_source_evidence() -> None:
+    from app.agent.tool_dispatch import _extract_citations, _result_summary
+    from app.investigation.domain import IssueRecord, RelatedIssuesResult
+
+    result = RelatedIssuesResult(issues=(IssueRecord(
+        number=9, title="Related symptom", body="Untrusted issue content",
+        state="open", html_url="https://github.com/octo/demo/issues/9",
+    ),))
+    assert _extract_citations(result) == ()
+    observation = json.loads(_result_summary(result, ()))
+    assert observation["data"]["issues"][0]["title"] == "Related symptom"
+    assert observation["untrusted_data"] is True
 
 
 class _GithubFake:
