@@ -90,6 +90,16 @@ class RealIssueOnlyPredictor:
         )
 
 
+class _OfflineEvaluationHistory:
+    """No mutable GitHub history is available in a frozen-source benchmark."""
+
+    async def fetch_recent_commits(self, *args: Any, **kwargs: Any) -> None:
+        raise ValueError("Live history is unavailable during frozen evaluation.")
+
+    async def fetch_related_issues(self, *args: Any, **kwargs: Any) -> None:
+        raise ValueError("Live history is unavailable during frozen evaluation.")
+
+
 class RealRepoScopeAnalyzer:
     def __init__(
         self,
@@ -103,7 +113,9 @@ class RealRepoScopeAnalyzer:
         self._model = model
         self._configuration = configuration
         self._ledger = ledger
-        self._github = github
+        # Keep constructor compatibility, but do not retain or delegate the live
+        # client. A created-at filter cannot freeze later edits to Issue bodies.
+        self._github = _OfflineEvaluationHistory()
         self._clock = clock or (lambda: datetime.now(UTC))
 
     async def __call__(self, case: Any, snapshot_root: Path) -> EvaluationPrediction:

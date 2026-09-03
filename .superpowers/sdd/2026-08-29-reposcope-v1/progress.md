@@ -1,5 +1,9 @@
 # SDD ledger — plan: docs/superpowers/plans/2026-08-29-reposcope-v1.md
 
+## 2026-09-03: development v2 completed; hidden gate failed
+
+PR #6 and #7 merged into main as 7d057bc and 7c119a9. Before the authorized paid rerun, sealed mutable GitHub history in frozen evaluation only (source commit 3ee8300; regression 8 passed, full backend 394 passed/1 skipped, focused reviewer clean). One complete paired six-case run 20260903T031631Z-deepseek-v4-flash consumed 1,436,872 tokens, estimated $0.712647904 including preflight and three recovered schema failures. Offline scorer verified artifacts before loading development gold. Issue-only FileRecall@5/MRR 0.500000; RepoScope 0.166667, two valid citations in dateutil, five insufficient-evidence cases. History input policy also changed: not a single-variable causal comparison against v1. No hidden, deployment, release or second paid rerun. Report: docs/evaluations/deepseek-v4-flash-development-v2.md. Next milestone: export safe per-node diagnostics and add offline replay coverage before seeking separately bounded model diagnostics; current artifacts do not determine five downgrade causes.
+
 ## 2026-09-03: evidence propagation repair
 
 Implementation and offline verification complete on `codex/evidence-propagation`, based on PR #6 (`f1c74c4`). Restored bounded tool navigation observations and follow-up hypotheses/gaps; bound explicit report references only to validated successful tool reads, including revision. No model calls or new benchmark scores. Backend 392 passed/1 skipped; frontend 65 passed; Chromium live 1/static 3; schema, dataset, build and security checks passed. Latest user instruction replaces repeated reviewer routing with focused regression verification. Historical six-case per-node causes remain unproven because v1 did not retain node outputs. Report: `docs/evaluations/evidence-propagation-repair-v1.md`. Next step: separately approved development rerun, not hidden.
