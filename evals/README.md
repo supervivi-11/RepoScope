@@ -11,6 +11,10 @@
 
 ## 数据与答案必须物理分离
 
+在线评测现已增加封闭字段的逐节点 `diagnostics.v1.jsonl`，辅助定位证据丢失；
+诊断不会进入模型上下文，旧 v1/v2 结果保持不变且无法事后补齐。实现与离线验证见
+[安全诊断说明](../docs/evaluations/safe-diagnostics-v1.md)。本次开发没有新增真实评测成绩。
+
 ```text
 benchmark-cases.v1.jsonl ──> Issue-only / RepoScope runner ──> result.v1 JSONL
 

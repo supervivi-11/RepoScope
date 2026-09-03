@@ -270,6 +270,76 @@ def test_development_score_emits_real_summary_v2_with_provenance(tmp_path: Path)
     assert "hidden" not in stored
 
 
+def _attach_diagnostics(predictions: Path, digest: str) -> None:
+    from app.evaluation.diagnostics import CaseDiagnostic, DiagnosticStep, DIAGNOSTIC_FILENAME
+
+    nodes = ("understand_issue", "begin_round", "select_tool", "critique_evidence", "compose_report", "validate_report", "prepare_review")
+    rows = tuple(CaseDiagnostic(
+        case_id=f"development-case-{number}", dataset_digest=digest, commit_sha=f"{number:x}" * 40,
+        status="complete", steps=tuple(DiagnosticStep(
+            sequence=i, node=node, tool_calls=0, evidence_rounds=int(i > 1), model_attempts=1,
+            evidence_before=0, evidence_after=0, hypothesis_count=0, hypothesis_reference_count=0,
+            hypothesis_tool_matches=0, report_outcome="insufficient_evidence" if i >= 5 else None,
+        ) for i, node in enumerate(nodes, 1)),
+    ) for number in range(1, 7))
+    path = predictions / DIAGNOSTIC_FILENAME
+    write_jsonl(path, rows)
+    manifest_path = predictions / "prediction-manifest.v1.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"].append({"path": DIAGNOSTIC_FILENAME, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+@pytest.mark.parametrize("corruption", [None, "hash", "extra_field", "incomplete", "wrong_case", "wrong_commit", "wrong_count", "sequence"])
+def test_optional_diagnostics_verified_before_gold(tmp_path: Path, corruption: str | None) -> None:
+    from app.evaluation.diagnostics import DIAGNOSTIC_FILENAME
+    cases, digest_file, snapshots, _, digest = _dataset(tmp_path)
+    predictions = _predictions(tmp_path, digest)
+    _attach_diagnostics(predictions, digest)
+    path = predictions / DIAGNOSTIC_FILENAME
+    if corruption:
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        if corruption in {"hash", "extra_field"}:
+            rows[0]["unsafe_text"] = "MODEL_COT_CANARY"
+        elif corruption == "incomplete":
+            rows[0]["status"] = "in_progress"
+        elif corruption == "wrong_case":
+            rows[0]["case_id"] = "different-case"
+        elif corruption == "wrong_commit":
+            rows[0]["commit_sha"] = "f" * 40
+        elif corruption == "wrong_count":
+            rows[0]["steps"][-1]["model_attempts"] = 10
+        else:
+            rows[0]["steps"][1]["sequence"] = 6
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8", newline="")
+        if corruption != "hash":
+            _rehash_artifact(predictions, DIAGNOSTIC_FILENAME)
+    kwargs = dict(cases_path=cases, digest_path=digest_file, snapshots_root=snapshots,
+                  prediction_directory=predictions, output_path=tmp_path / "summary.json")
+    if corruption:
+        # The missing gold would raise a different error if opened prematurely.
+        with pytest.raises(ValueError) as caught:
+            score_development(**kwargs, development_gold_path=tmp_path / "absent" / "development-gold.v1.jsonl")
+        assert "JSONL file is unavailable" not in str(caught.value)
+        assert not (tmp_path / "summary.json").exists()
+    else:
+        from app.evaluation.real_contracts import RunArtifactManifest
+        manifest = RunArtifactManifest.model_validate_json((predictions / "prediction-manifest.v1.json").read_text(encoding="utf-8"))
+        rewritten = write_prediction_artifacts(
+            output_directory=predictions, run_id=manifest.run_id,
+            configuration=DeepSeekRunConfig.approved(), dataset_digest=digest,
+            issue_only_results=read_jsonl(predictions / "issue-only.results.v1.jsonl", BenchmarkResult),
+            reposcope_results=read_jsonl(predictions / "reposcope.results.v1.jsonl", BenchmarkResult),
+            call_usage=read_jsonl(predictions / "call-usage.v1.jsonl", ProviderCallUsage),
+            reproduction_commands=("predict", "score"), reposcope_commit=manifest.reposcope_commit,
+            dependency_versions=manifest.dependency_versions, execution_order=manifest.execution_order,
+            started_at=manifest.started_at, finished_at=manifest.finished_at, diagnostics_required=True,
+        )
+        assert DIAGNOSTIC_FILENAME in {artifact.path for artifact in rewritten.artifacts}
+        result = score_development(**kwargs, development_gold_path=tmp_path / "development-gold.v1.jsonl")
+        assert result.case_count == 6
+
+
 @pytest.mark.parametrize("tamper", ("empty_ledger", "failed_result", "usage_mismatch"))
 def test_development_score_rejects_unverifiable_predictions_before_gold(
     tmp_path: Path, tamper: str

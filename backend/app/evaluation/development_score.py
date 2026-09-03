@@ -13,6 +13,7 @@ from app.investigation import PythonRepositoryIndex
 
 from .contracts import BenchmarkGold, BenchmarkResult, EvaluationSummaryV2
 from .jsonl import read_jsonl
+from .diagnostics import DIAGNOSTIC_FILENAME, validate_diagnostic_artifact
 from .metrics import score_benchmark
 from .online_run import load_development_inputs
 from .real_contracts import (
@@ -95,6 +96,8 @@ def score_development(
         started_at=manifest.started_at,
         finished_at=manifest.finished_at,
     )
+    if any(item.path == DIAGNOSTIC_FILENAME for item in manifest.artifacts):
+        validate_diagnostic_artifact(prediction_root / DIAGNOSTIC_FILENAME, results=reposcope, dataset_digest=digest, cases=cases)
     if development_gold_path.name != "development-gold.v1.jsonl":
         raise ValueError("development gold filename must be development-gold.v1.jsonl")
     gold = read_jsonl(development_gold_path, BenchmarkGold)
@@ -143,7 +146,7 @@ def _verify_artifacts(root: Path, manifest: RunArtifactManifest) -> None:
         "reproduce.txt",
     }
     by_path = {item.path: item.sha256 for item in manifest.artifacts}
-    if set(by_path) != required:
+    if not required <= set(by_path) <= required | {DIAGNOSTIC_FILENAME}:
         raise ValueError("prediction manifest has an unexpected artifact set")
     for relative, expected in by_path.items():
         path = root / relative

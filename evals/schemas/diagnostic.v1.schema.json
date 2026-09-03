@@ -1,0 +1,323 @@
+{
+  "$defs": {
+    "DiagnosticStep": {
+      "additionalProperties": false,
+      "properties": {
+        "bound_count": {
+          "default": 0,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Bound Count",
+          "type": "integer"
+        },
+        "critique_sufficient": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Critique Sufficient"
+        },
+        "events": {
+          "default": [],
+          "items": {
+            "enum": [
+              "issue_understood",
+              "evidence_round_started",
+              "investigation_completed",
+              "tool_succeeded",
+              "tool_failed",
+              "tool_budget_exhausted",
+              "evidence_sufficient",
+              "evidence_insufficient",
+              "round_budget_exhausted",
+              "report_composed",
+              "report_evidence_bound",
+              "report_downgraded",
+              "citation_rejected",
+              "citation_validated",
+              "review_ready",
+              "model_failed",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "maxItems": 130,
+          "title": "Events",
+          "type": "array"
+        },
+        "evidence_after": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Evidence After",
+          "type": "integer"
+        },
+        "evidence_before": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Evidence Before",
+          "type": "integer"
+        },
+        "evidence_rounds": {
+          "maximum": 2,
+          "minimum": 0,
+          "title": "Evidence Rounds",
+          "type": "integer"
+        },
+        "hypothesis_count": {
+          "maximum": 8,
+          "minimum": 0,
+          "title": "Hypothesis Count",
+          "type": "integer"
+        },
+        "hypothesis_reference_count": {
+          "minimum": 0,
+          "title": "Hypothesis Reference Count",
+          "type": "integer"
+        },
+        "hypothesis_tool_matches": {
+          "minimum": 0,
+          "title": "Hypothesis Tool Matches",
+          "type": "integer"
+        },
+        "impacted_file_count": {
+          "default": 0,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Impacted File Count",
+          "type": "integer"
+        },
+        "model_attempts": {
+          "maximum": 128,
+          "minimum": 0,
+          "title": "Model Attempts",
+          "type": "integer"
+        },
+        "node": {
+          "enum": [
+            "understand_issue",
+            "begin_round",
+            "select_tool",
+            "execute_tool",
+            "critique_evidence",
+            "compose_report",
+            "validate_report",
+            "prepare_review"
+          ],
+          "title": "Node",
+          "type": "string"
+        },
+        "primary_reference_ids": {
+          "default": [],
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Primary Reference Ids",
+          "type": "array"
+        },
+        "rejection_codes": {
+          "default": [],
+          "items": {
+            "enum": [
+              "commit_mismatch",
+              "source_mismatch",
+              "excerpt_mismatch"
+            ],
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Rejection Codes",
+          "type": "array"
+        },
+        "report_evidence_ids": {
+          "default": [],
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Report Evidence Ids",
+          "type": "array"
+        },
+        "report_outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "root_cause_identified",
+                "insufficient_evidence"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Report Outcome"
+        },
+        "report_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "supported_primary",
+                "model_report_insufficient",
+                "primary_absent",
+                "primary_references_absent",
+                "primary_unvalidated"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Report Reason"
+        },
+        "sequence": {
+          "maximum": 64,
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "enum": [
+                "get_repository_map",
+                "search_code",
+                "read_code",
+                "find_symbol",
+                "find_references",
+                "get_recent_commits",
+                "get_related_issues",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        },
+        "tool_calls": {
+          "maximum": 12,
+          "minimum": 0,
+          "title": "Tool Calls",
+          "type": "integer"
+        },
+        "tool_citation_count": {
+          "default": 0,
+          "maximum": 32,
+          "minimum": 0,
+          "title": "Tool Citation Count",
+          "type": "integer"
+        },
+        "tool_succeeded": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Succeeded"
+        },
+        "valid_count": {
+          "default": 0,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Valid Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sequence",
+        "node",
+        "tool_calls",
+        "evidence_rounds",
+        "model_attempts",
+        "evidence_before",
+        "evidence_after",
+        "hypothesis_count",
+        "hypothesis_reference_count",
+        "hypothesis_tool_matches"
+      ],
+      "title": "DiagnosticStep",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "pattern": "^[a-z0-9][a-z0-9-]{0,99}$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "commit_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Commit Sha",
+      "type": "string"
+    },
+    "dataset_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dataset Digest",
+      "type": "string"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "const": "analysis_aborted",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "schema_version": {
+      "const": "reposcope.eval.diagnostic.v1",
+      "default": "reposcope.eval.diagnostic.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "default": "in_progress",
+      "enum": [
+        "in_progress",
+        "complete",
+        "aborted"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "steps": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/DiagnosticStep"
+      },
+      "maxItems": 64,
+      "title": "Steps",
+      "type": "array"
+    }
+  },
+  "required": [
+    "case_id",
+    "dataset_digest",
+    "commit_sha"
+  ],
+  "title": "CaseDiagnostic",
+  "type": "object"
+}

@@ -289,3 +289,168 @@ async def test_reposcope_analyzer_does_not_score_model_fallback_as_success(
 
     with pytest.raises(RuntimeError, match="model failure"):
         await analyzer(case, snapshot)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scenario", ["bound", "no_primary", "bad_excerpt", "bad_range", "valid_nonprimary", "critique_only", "model_insufficient"])
+async def test_diagnostic_replay_distinguishes_report_loss_without_changing_prediction(
+    tmp_path: Path, scenario: str,
+) -> None:
+    from app.evaluation.diagnostics import DiagnosticJournal, CaseDiagnostic
+    from app.evaluation.jsonl import read_jsonl
+
+    snapshot = tmp_path / "snapshot"
+    source = snapshot / "src" / "parser.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8", newline="")
+    case = _case(snapshot)
+
+    def gateway_for_scenario():
+        gateway = _repo_gateway()
+        report = gateway.responses[ModelPhase.REPORT_COMPOSITION][0]
+        if scenario == "bound":
+            report = report.model_copy(update={"evidence": ()})
+        elif scenario == "no_primary":
+            report = report.model_copy(update={"primary_hypothesis": None})
+        elif scenario == "bad_excerpt":
+            report = report.model_copy(update={"evidence": (_citation().model_copy(update={"excerpt": "UNTRUSTED_SECRET_CANARY"}),)})
+        elif scenario in {"bad_range", "valid_nonprimary"}:
+            primary = report.primary_hypothesis.model_copy(update={"evidence": (_citation().summary().model_copy(update={"start_line": 20, "end_line": 21}),)})
+            report = report.model_copy(update={"evidence": report.evidence if scenario == "valid_nonprimary" else (), "primary_hypothesis": primary})
+        elif scenario == "critique_only":
+            gateway.responses[ModelPhase.TOOL_SELECTION] = deque([ToolRequest(complete=True)])
+            report = report.model_copy(update={"evidence": ()})
+        else:
+            report = report.model_copy(update={"outcome": "insufficient_evidence", "primary_hypothesis": None, "evidence": ()})
+        gateway.responses[ModelPhase.REPORT_COMPOSITION] = deque([report])
+        return gateway
+
+    common = dict(configuration=DeepSeekRunConfig.approved(), github=_GithubFake())
+    baseline_gateway = gateway_for_scenario()
+    baseline = await RealRepoScopeAnalyzer(model=baseline_gateway, ledger=InMemoryCallLedger(max_total_tokens=2_500_000), **common)(case, snapshot)
+    journal = DiagnosticJournal(tmp_path / "diagnostics.v1.jsonl", dataset_digest="b" * 64)
+    gateway = gateway_for_scenario()
+    diagnosed = await RealRepoScopeAnalyzer(model=gateway, ledger=InMemoryCallLedger(max_total_tokens=2_500_000), diagnostics=journal, **common)(case, snapshot)
+    assert diagnosed.model_dump(exclude={"usage"}) == baseline.model_dump(exclude={"usage"})
+    assert diagnosed.usage.tool_calls == baseline.usage.tool_calls
+    assert diagnosed.usage.model_attempts == baseline.usage.model_attempts
+    assert gateway.contexts == baseline_gateway.contexts
+    row, = read_jsonl(journal.path, CaseDiagnostic)
+    assert row.status == "complete"
+    assert [step.sequence for step in row.steps] == list(range(1, len(row.steps) + 1))
+    assert row.steps[-1].node == "prepare_review"
+    validated = next(step for step in row.steps if step.node == "validate_report")
+    expected = {"bound": "supported_primary", "no_primary": "primary_absent", "bad_excerpt": "primary_unvalidated", "bad_range": "primary_unvalidated", "valid_nonprimary": "primary_unvalidated", "critique_only": "primary_unvalidated", "model_insufficient": "model_report_insufficient"}
+    assert validated.report_reason == expected[scenario]
+    if scenario == "bound":
+        assert "report_evidence_bound" in validated.events
+        assert len(validated.report_evidence_ids) == 1
+    if scenario == "bad_excerpt":
+        assert validated.rejection_codes == ("excerpt_mismatch",)
+    if scenario == "valid_nonprimary":
+        assert validated.valid_count == 1 and validated.report_evidence_ids == ()
+        assert validated.evidence_after == 1  # valid evidence pool != retained report evidence
+    if scenario == "critique_only":
+        critique = next(step for step in row.steps if step.node == "critique_evidence")
+        assert critique.evidence_before == 0 and critique.evidence_after == 1
+        assert critique.hypothesis_tool_matches == 0 and validated.bound_count == 0
+    assert "UNTRUSTED_SECRET_CANARY" not in journal.path.read_text(encoding="utf-8")
+    # No diagnostic file or answer is ever fed back into the model context.
+    assert "diagnostic" not in repr(gateway.contexts).lower()
+
+
+@pytest.mark.anyio
+async def test_diagnostics_survive_model_abort_and_io_failure_stops_calls(tmp_path: Path, monkeypatch) -> None:
+    import app.evaluation.diagnostics as module
+    from app.evaluation.jsonl import read_jsonl
+
+    snapshot = tmp_path / "snapshot"
+    source = snapshot / "src" / "parser.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8", newline="")
+    gateway = _repo_gateway()
+    gateway.responses[ModelPhase.REPORT_COMPOSITION] = deque([PermanentModelError("SECRET_PROVIDER_ERROR")])
+    journal = module.DiagnosticJournal(tmp_path / "failed.jsonl", dataset_digest="b" * 64)
+    analyzer = RealRepoScopeAnalyzer(model=gateway, configuration=DeepSeekRunConfig.approved(), ledger=InMemoryCallLedger(max_total_tokens=2_500_000), github=_GithubFake(), diagnostics=journal)
+    with pytest.raises(RuntimeError, match="model failure"):
+        await analyzer(_case(snapshot), snapshot)
+    row, = read_jsonl(journal.path, module.CaseDiagnostic)
+    assert row.status == "aborted"
+    assert any("model_failed" in step.events for step in row.steps)
+    assert "SECRET_PROVIDER_ERROR" not in journal.path.read_text(encoding="utf-8")
+
+    gateway = _repo_gateway()
+    journal = module.DiagnosticJournal(tmp_path / "io-failed.jsonl", dataset_digest="b" * 64)
+    analyzer = RealRepoScopeAnalyzer(model=gateway, configuration=DeepSeekRunConfig.approved(), ledger=InMemoryCallLedger(max_total_tokens=2_500_000), github=_GithubFake(), diagnostics=journal)
+    def no_write(*args, **kwargs):
+        raise OSError("private path canary")
+    monkeypatch.setattr(module, "write_jsonl", no_write)
+    with pytest.raises(module.DiagnosticWriteAbort):
+        await analyzer(_case(snapshot), snapshot)
+    assert not gateway.contexts
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scenario", ["unknown", "empty", "two_rounds", "tool_cap"])
+async def test_diagnostics_capture_navigation_failure_and_budgets(tmp_path: Path, scenario: str) -> None:
+    from app.evaluation.diagnostics import DiagnosticJournal, CaseDiagnostic
+    from app.evaluation.jsonl import read_jsonl
+    snapshot = tmp_path / "snapshot"
+    source = snapshot / "src" / "parser.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8", newline="")
+    gateway = _repo_gateway()
+    read = gateway.responses[ModelPhase.TOOL_SELECTION][0]
+    if scenario == "unknown":
+        gateway.responses[ModelPhase.TOOL_SELECTION].appendleft(ToolRequest(tool_name="SECRET_TOOL_CANARY", arguments={"secret": "SECRET_ARG_CANARY"}))
+    elif scenario == "empty":
+        gateway.responses[ModelPhase.TOOL_SELECTION].appendleft(ToolRequest(tool_name="search_code", arguments={"query": "NOT_FOUND_CANARY"}))
+    elif scenario == "two_rounds":
+        gateway.responses[ModelPhase.TOOL_SELECTION] = deque([read, ToolRequest(complete=True), read, ToolRequest(complete=True)])
+        gateway.responses[ModelPhase.EVIDENCE_CRITIQUE].appendleft(CritiqueResult(sufficient=False, uncertainties=("SECRET_UNCERTAINTY_CANARY",)))
+    else:
+        gateway.responses[ModelPhase.TOOL_SELECTION] = deque([read] * 12)
+    report = gateway.responses[ModelPhase.REPORT_COMPOSITION][0]
+    gateway.responses[ModelPhase.REPORT_COMPOSITION][0] = report.model_copy(update={
+        "issue_summary": "SECRET_SUMMARY_CANARY", "uncertainties": ("SECRET_REPORT_CANARY",),
+        "primary_hypothesis": report.primary_hypothesis.model_copy(update={"statement": "SECRET_STATEMENT_CANARY"}),
+    })
+    journal = DiagnosticJournal(tmp_path / "diagnostics.jsonl", dataset_digest="b" * 64)
+    await RealRepoScopeAnalyzer(model=gateway, configuration=DeepSeekRunConfig.approved(), ledger=InMemoryCallLedger(max_total_tokens=2_500_000), github=_GithubFake(), diagnostics=journal)(_case(snapshot), snapshot)
+    row, = read_jsonl(journal.path, CaseDiagnostic)
+    tools = [step for step in row.steps if step.node == "execute_tool"]
+    if scenario == "unknown":
+        assert tools[0].tool == "unknown" and tools[0].tool_succeeded is False
+    elif scenario == "empty":
+        assert tools[0].tool_succeeded is True and tools[0].tool_citation_count == 0
+    elif scenario == "two_rounds":
+        assert row.steps[-1].evidence_rounds == 2
+        assert tools[-1].evidence_before == tools[-1].evidence_after == 1  # exact dedup
+    else:
+        assert len(tools) == row.steps[-1].tool_calls == 12
+        assert "tool_budget_exhausted" in tools[-1].events
+    assert "CANARY" not in journal.path.read_text(encoding="utf-8")
+
+
+@pytest.mark.anyio
+async def test_midrun_diagnostic_write_failure_preserves_prefix(tmp_path: Path, monkeypatch) -> None:
+    import app.evaluation.diagnostics as module
+    from app.evaluation.jsonl import read_jsonl
+    snapshot = tmp_path / "snapshot"
+    source = snapshot / "src" / "parser.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8", newline="")
+    journal = module.DiagnosticJournal(tmp_path / "diagnostics.jsonl", dataset_digest="b" * 64)
+    real_write = module.write_jsonl
+    def fail_third_step(path, rows):
+        if rows and len(rows[0].steps) == 3:
+            raise OSError("SECRET_DISK_PATH_CANARY")
+        real_write(path, rows)
+    monkeypatch.setattr(module, "write_jsonl", fail_third_step)
+    gateway = _repo_gateway()
+    with pytest.raises(module.DiagnosticWriteAbort):
+        await RealRepoScopeAnalyzer(model=gateway, configuration=DeepSeekRunConfig.approved(), ledger=InMemoryCallLedger(max_total_tokens=2_500_000), github=_GithubFake(), diagnostics=journal)(_case(snapshot), snapshot)
+    row, = read_jsonl(journal.path, module.CaseDiagnostic)
+    assert row.status == "in_progress" and len(row.steps) == 2
+    assert sum(len(values) for values in gateway.contexts.values()) == 2
+    assert "CANARY" not in journal.path.read_text(encoding="utf-8")

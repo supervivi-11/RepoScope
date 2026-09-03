@@ -45,6 +45,7 @@ from .real_contracts import (
 )
 from .real_validation import validate_complete_prediction_evidence
 from .snapshot import snapshot_tree_digest
+from .diagnostics import DiagnosticJournal, DIAGNOSTIC_FILENAME, validate_diagnostic_artifact
 
 
 _GOLD_FILENAMES = frozenset(
@@ -249,6 +250,7 @@ def write_prediction_artifacts(
     execution_order: tuple[str, ...],
     started_at: datetime,
     finished_at: datetime,
+    diagnostics_required: bool = False,
 ) -> RunArtifactManifest:
     validate_complete_prediction_evidence(
         configuration=configuration,
@@ -274,6 +276,10 @@ def write_prediction_artifacts(
         ("\n".join(reproduction_commands).rstrip() + "\n").encode("utf-8"),
     )
     paths = (config_path, issue_path, reposcope_path, usage_path, reproduce_path)
+    diagnostic_path = output_directory / DIAGNOSTIC_FILENAME
+    if diagnostics_required or diagnostic_path.exists():
+        validate_diagnostic_artifact(diagnostic_path, results=reposcope_results, dataset_digest=dataset_digest)
+        paths += (diagnostic_path,)
     manifest = RunArtifactManifest(
         schema_version="reposcope.eval.manifest.v1",
         completion_status="complete",
@@ -381,12 +387,14 @@ class _RealCaseExecutor:
         ledger: object,
         github: object,
         dataset_digest: str,
+        diagnostics: DiagnosticJournal | None = None,
     ) -> None:
         self._credentials = credentials
         self._configuration = configuration
         self._ledger = ledger
         self._github = github
         self._dataset_digest = dataset_digest
+        self._diagnostics = diagnostics
 
     async def __call__(
         self,
@@ -422,6 +430,7 @@ class _RealCaseExecutor:
             configuration=self._configuration,
             ledger=self._ledger,
             github=self._github,
+            diagnostics=self._diagnostics,
         )
         return await RepoScopeRunner(
             analyzer,
@@ -447,6 +456,7 @@ async def _run_online(args: argparse.Namespace) -> RunArtifactManifest:
     if output_directory.exists():
         raise ValueError("output directory must not already exist")
     reposcope_commit, dependency_versions = _source_provenance(Path.cwd())
+    diagnostics = DiagnosticJournal(output_directory / DIAGNOSTIC_FILENAME, dataset_digest=digest)
     from app.ingestion import GithubClient
 
     from .deepseek_provider import (
@@ -479,6 +489,7 @@ async def _run_online(args: argparse.Namespace) -> RunArtifactManifest:
             ledger=ledger,
             github=GithubClient(http, token=github_token),
             dataset_digest=digest,
+            diagnostics=diagnostics,
         )
         issue_only, reposcope = await run_paired_predictions(
             cases=cases,
@@ -536,6 +547,7 @@ async def _run_online(args: argparse.Namespace) -> RunArtifactManifest:
         ),
         started_at=started_at,
         finished_at=now,
+        diagnostics_required=True,
     )
 
 

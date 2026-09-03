@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -37,6 +37,9 @@ from .validation import bind_tool_evidence, downgrade_unsubstantiated_report
 _MODEL_SAFE_ERROR = "Model output could not be completed safely."
 _REVISION_LIMIT_ERROR = "The single allowed report revision has already been used."
 
+# Trusted host callback only; never supplied by a model or stored in checkpoints.
+NodeObserver = Callable[[str, AnalysisState, dict[str, Any], dict[str, Any]], None]
+
 
 def build_analysis_state(
     *,
@@ -62,8 +65,14 @@ def build_investigation_graph(
     model: ModelGateway,
     budget: InvestigationBudget | None = None,
     checkpointer: Any = None,
+    observer: NodeObserver | None = None,
 ):
     active_budget = budget or InvestigationBudget()
+
+    def observed(node, state, update, details=None):
+        if observer is not None:
+            observer(node, state, update, details or {})
+        return update
 
     async def understand_issue(state: AnalysisState) -> dict[str, Any]:
         counters = state.counters
@@ -387,13 +396,17 @@ def build_investigation_graph(
         safe_errors = state.safe_errors
         for issue in validation.invalid:
             safe_errors = _append_safe_error(safe_errors, issue.safe_error)
-        return {
+        return observed("validate_report", state, {
             "phase": AnalysisPhase.VALIDATING,
             "report": report,
             "evidence": validation.valid,
             "events": events,
             "safe_errors": safe_errors,
-        }
+        }, {
+            "bound_count": len(bound.evidence) - len(state.report.evidence),
+            "valid_count": len(validation.valid),
+            "rejection_codes": tuple(item.code for item in validation.invalid),
+        })
 
     async def prepare_review(state: AnalysisState) -> dict[str, Any]:
         event = _event(
@@ -585,14 +598,20 @@ def build_investigation_graph(
         }
 
     graph = StateGraph(AnalysisState)
-    graph.add_node("understand_issue", understand_issue)
-    graph.add_node("begin_round", begin_round)
-    graph.add_node("select_tool", select_tool)
-    graph.add_node("execute_tool", execute_tool)
-    graph.add_node("critique_evidence", critique_evidence)
-    graph.add_node("compose_report", compose_report)
+    def observe_node(name, function):
+        async def run(state: AnalysisState):
+            update = await function(state)
+            return observed(name, state, update)
+        return run if observer is not None else function
+
+    graph.add_node("understand_issue", observe_node("understand_issue", understand_issue))
+    graph.add_node("begin_round", observe_node("begin_round", begin_round))
+    graph.add_node("select_tool", observe_node("select_tool", select_tool))
+    graph.add_node("execute_tool", observe_node("execute_tool", execute_tool))
+    graph.add_node("critique_evidence", observe_node("critique_evidence", critique_evidence))
+    graph.add_node("compose_report", observe_node("compose_report", compose_report))
     graph.add_node("validate_report", validate_report)
-    graph.add_node("prepare_review", prepare_review)
+    graph.add_node("prepare_review", observe_node("prepare_review", prepare_review))
     graph.add_node("review", review)
     graph.add_node("accept_report", accept_report)
     graph.add_node("revise_report", revise_report)
