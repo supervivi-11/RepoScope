@@ -181,6 +181,64 @@ def _config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
 
+def test_followup_context_preserves_hypotheses_gaps_and_original_issue(tmp_path: Path) -> None:
+    from app.agent.graph import _investigation_context
+
+    hypothesis = Hypothesis(statement="Check the caller.", confidence=0.4)
+    state = _state(_tools(tmp_path)).model_copy(update={
+        "hypotheses": (hypothesis,), "safe_errors": ("Caller still unread.",),
+    })
+    context = _investigation_context(state)
+    assert context["hypotheses"][0]["statement"] == "Check the caller."
+    assert context["safe_uncertainties"] == ["Caller still unread."]
+    assert context["issue"]["body"] == state.issue.body
+
+
+@pytest.mark.anyio
+async def test_report_reference_resolves_from_tool_without_recopying_source(tmp_path: Path) -> None:
+    tools = _tools(tmp_path)
+    report = _report(citation=_citation()).model_copy(update={"evidence": ()})
+    graph = build_investigation_graph(
+        tools=tools, model=_happy_model(report=report),
+        budget=InvestigationBudget(), checkpointer=_memory(),
+    )
+    paused = await graph.ainvoke(_state(tools), _config("resolve-reference"))
+    assert paused["report"].outcome == "root_cause_identified"
+    assert paused["report"].evidence[0].excerpt == SOURCE
+    assert paused["report"].primary_hypothesis.evidence == (_citation().summary(),)
+    assert any(event.kind == "report_evidence_bound" for event in paused["events"])
+
+
+@pytest.mark.anyio
+async def test_critique_only_citation_cannot_hydrate_report_without_tool_read(tmp_path: Path) -> None:
+    tools = _tools(tmp_path)
+    report = _report(citation=_citation()).model_copy(update={"evidence": ()})
+    model = _happy_model(report=report)
+    model.responses[ModelPhase.TOOL_SELECTION] = deque([ToolRequest(complete=True)])
+    graph = build_investigation_graph(
+        tools=tools, model=model, budget=InvestigationBudget(), checkpointer=_memory(),
+    )
+    paused = await graph.ainvoke(_state(tools), _config("no-tool-read"))
+    assert paused["report"].outcome == "insufficient_evidence"
+    assert paused["report"].evidence == ()
+    assert any(event.kind == "report_downgraded" for event in paused["events"])
+
+
+@pytest.mark.anyio
+async def test_revision_can_bind_known_tool_reference_without_source_copy(tmp_path: Path) -> None:
+    tools = _tools(tmp_path)
+    revised = _report(citation=_citation()).model_copy(update={"evidence": ()})
+    graph = build_investigation_graph(
+        tools=tools, model=_happy_model(revision=revised),
+        budget=InvestigationBudget(), checkpointer=_memory(),
+    )
+    config = _config("reference-revision")
+    await graph.ainvoke(_state(tools), config)
+    result = await graph.ainvoke(Command(resume={"action": "revise", "text": "Clarify the cause"}), config)
+    assert result["report"].outcome == "root_cause_identified"
+    assert result["report"].evidence[0].excerpt == SOURCE
+
+
 def _memory() -> InMemorySaver:
     model_names = (
         "AnalysisEvent",

@@ -22,6 +22,35 @@ SHA = "a" * 40
 SOURCE = "def parse(value):\n    return value\n"
 
 
+@pytest.mark.parametrize("bad", ["unknown", "wrong_sha", "explicit_fabrication", "bad_tool"])
+def test_reference_binding_never_repairs_fabricated_or_unseen_evidence(tmp_path: Path, bad: str) -> None:
+    from app.agent.validation import bind_tool_evidence
+
+    citation = _citation()
+    reference = citation.summary()
+    supplied = ()
+    available = (citation,)
+    if bad == "unknown":
+        reference = reference.model_copy(update={"path": "src/unseen.py"})
+    elif bad == "wrong_sha":
+        reference = reference.model_copy(update={"commit_sha": "b" * 40})
+    elif bad == "explicit_fabrication":
+        supplied = (citation.model_copy(update={"excerpt": "fabricated\n"}),)
+    else:
+        available = (citation.model_copy(update={"excerpt": "fabricated\n"}),)
+    report = AnalysisReport(
+        outcome="root_cause_identified", issue_summary="Bug", observed_behavior="Invalid",
+        expected_behavior="Valid", confidence=0.9,
+        primary_hypothesis=Hypothesis(statement="Missing check", confidence=0.9, evidence=(reference,)),
+        evidence=supplied,
+    )
+    index = _index(tmp_path)
+    bound = bind_tool_evidence(index, report, available)
+    sanitized, _ = downgrade_unsubstantiated_report(index, bound)
+    assert sanitized.outcome == "insufficient_evidence"
+    assert sanitized.evidence == ()
+
+
 def _index(tmp_path: Path) -> PythonRepositoryIndex:
     root = tmp_path / "snapshot"
     source = root / "src" / "parser.py"

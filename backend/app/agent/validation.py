@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from app.investigation import PythonRepositoryIndex
 from app.investigation.errors import InvestigationError
@@ -131,6 +131,50 @@ def downgrade_unsubstantiated_report(
         ),
         validation,
     )
+
+
+def bind_tool_evidence(
+    index: PythonRepositoryIndex,
+    report: AnalysisReport,
+    tool_evidence: tuple[EvidenceCitation, ...],
+) -> AnalysisReport:
+    """Resolve explicit hypothesis references, never invent support for a claim.
+
+    An explicit report citation (even a fabricated one) takes precedence and is
+    left for the normal validator to reject. Only missing payloads may be bound
+    from exact, previously read tool evidence; critique-authored text is excluded.
+    """
+    existing = {_summary_key(item.summary()) for item in report.evidence}
+    references = tuple(
+        reference
+        for hypothesis in (report.primary_hypothesis, *report.alternative_hypotheses)
+        if hypothesis is not None
+        for reference in hypothesis.evidence
+    )
+    requested = {_summary_key(item) for item in references} - existing
+    candidates = tuple(
+        item for item in _deduplicate_citations(tool_evidence)
+        if _summary_key(item.summary()) in requested
+    )
+    # Process individually: tool history can contain more than 64 excerpts.
+    available: dict[tuple[str, str, int, int], EvidenceCitation] = {}
+    for candidate in candidates:
+        if validate_evidence(index, (candidate,)).valid:
+            available.setdefault(_summary_key(candidate.summary()), candidate)
+    bound = report
+    for reference in references:
+        key = _summary_key(reference)
+        if key in existing or key not in available:
+            continue
+        payload = bound.model_dump()
+        payload["evidence"] = (*bound.evidence, available[key])
+        try:
+            bound = AnalysisReport.model_validate(payload)
+        except ValidationError:
+            # Preserve the public count and serialized byte limits, fail closed.
+            break
+        existing.add(key)
+    return bound
 
 
 def _filter_hypothesis(
