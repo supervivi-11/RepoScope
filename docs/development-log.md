@@ -63,3 +63,17 @@
 4. 修复：`docker compose down -v` 重建 reposcope-v1 栈（卷内仅可重建 schema 与空 snapshots 卷，无有价值数据）；newproject 容器仅 stop 未删除。
 5. 验证：5 服务全部 healthy；`/health` 200、`/ready` 200、demo-cases 200、前端 5173 200。
 6. 遗留：newproject 旧栈可随时 `docker start` 恢复；8000/5173 现由 reposcope-v1 栈占用。
+
+---
+
+## 2026-09-03 阶段 2：离线召回诊断 —— 损失层已定位（无模型调用，免费）
+
+- 探针：`local/probe_recall.py`（不入库）对 6 个 development 案例的冻结快照建索引，用冻结 Issue 文本的确定性查询（backtick 片段/点分路径/标识符 token/gold 文件名）测 `search_code`/`find_symbol`；结果 `local/probe-results/recall-probe.v1.json`。
+- **关键发现：检索层"有能力"——6/6 案例的 gold 文件都可被合理查询召回且排名 1-9**（如 flask `handle_exception`→rank2、click `help_option_names`→rank1）。召回 0 的主通道不在检索层。
+- 静态梳理确认四个损失层（详见 `local/probe-results/phase2-loss-layers.md`）：
+  - A 检索缺口：纯路径匹配零命中、点分路径 0 命中、频次计分噪声大、Issue 派生 token 零命中率最高 34%；
+  - B critique 无判定标准：`sufficient` 无描述、与工具选择共用指令、仅 2 轮 → 提前放弃（v2 structlog 只用 3 次工具）；
+  - **C 引用精确性瓶颈（recall=0 的唯一清空通道）**：主假设引用必须精确 (commit,path,start,end)，任何漂移 → 验证拒绝 → 整报降级清空 impacted_files → predicted_files 为空；
+  - D 上下文膨胀：每次调用重发全部证据全文（v2 ≈35K token/调用），放大抄写失败率。
+- 阶段 3 判别目标：用 diagnostics 区分各案例主导损失是 B（提前 insufficient）还是 C（rejection codes）还是 A（零命中占比）。
+- 环境备注：损坏 ACL 的 `.pytest_cache` 在完全访问下仍无法删除（owner 为沙箱 SID，需管理员 takeown）；已被 pytest flags 永久绕开，无功能影响。
